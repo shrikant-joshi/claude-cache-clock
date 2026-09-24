@@ -1,3 +1,5 @@
 *.tmp
 *.bak
 .DS_Store
+CLAUDE.md
+PROGRESS.md
