@@ -5,6 +5,8 @@
 #     press Enter in the Claude app, double-click the row, or press Ctrl+Alt+K. It assumes a TTL.
 #   Claude Code (exact): fed by the cache-clock plugin's hooks, which read the API's usage receipts.
 #
+# The Windows add-on of the cache-clock plugin: the plugin's hooks (plugin\scripts, any OS) write the
+# session files; this widget only reads them and drops keep-alive flags.
 # Alerts: Windows notifications at T-15, T-10 and T-5 (T-2 and T-1 for 5-minute caches).
 # Auto keep-alive (opt-in): the plugin's listener pings Claude Code at T-60s, within a token budget.
 # Closes itself when neither the Claude app nor a Claude Code session is running (opt-out).
@@ -68,9 +70,10 @@ $script:PidPath = Join-Path $script:Base 'widget.pid'
 
 function Get-Epoch { [DateTimeOffset]::UtcNow.ToUnixTimeSeconds() }
 
-# Version: plugin.json next to the installed copy, or the plugin's manifest when run from the plugin.
+# Version: plugin.json next to the installed copy, or the plugin's manifest when run from the plugin
+# (addons\windows\ inside the plugin).
 $script:Version = '?'
-foreach ($mp in @((Join-Path $PSScriptRoot 'plugin.json'), (Join-Path (Split-Path -Parent $PSScriptRoot) '.claude-plugin\plugin.json'))) {
+foreach ($mp in @((Join-Path $PSScriptRoot 'plugin.json'), (Join-Path (Split-Path -Parent (Split-Path -Parent $PSScriptRoot)) '.claude-plugin\plugin.json'))) {
     try {
         if (Test-Path -LiteralPath $mp) { $script:Version = [string](Get-Content -LiteralPath $mp -Raw | ConvertFrom-Json).version; break }
     } catch { }
@@ -121,8 +124,21 @@ if ($loaded) {
         if ($script:Cfg.Contains($prop.Name)) { $script:Cfg[$prop.Name] = $prop.Value }
     }
 }
-function Save-Config { Write-Json $script:ConfigPath ([pscustomobject]$script:Cfg) }
+function Save-Config {
+    Write-Json $script:ConfigPath ([pscustomobject]$script:Cfg)
+    try { $script:CfgStamp = (Get-Item -LiteralPath $script:ConfigPath).LastWriteTimeUtc } catch { }
+}
 Save-Config
+# Pick up changes made elsewhere (for example /cache-clock:auto-keepalive in Claude Code).
+function Update-ConfigFromDisk {
+    try {
+        $stamp = (Get-Item -LiteralPath $script:ConfigPath -ErrorAction Stop).LastWriteTimeUtc
+        if ($stamp -eq $script:CfgStamp) { return }
+        $script:CfgStamp = $stamp
+        $disk = Read-Json $script:ConfigPath
+        if ($disk) { foreach ($prop in $disk.PSObject.Properties) { if ($script:Cfg.Contains($prop.Name)) { $script:Cfg[$prop.Name] = $prop.Value } } }
+    } catch { }
+}
 
 $script:Manual = Read-Json $script:ManualPath
 if (-not $script:Manual) { $script:Manual = [pscustomobject]@{ last_reset_at = 0 } }
@@ -648,6 +664,7 @@ $uiTimer = New-Object System.Windows.Forms.Timer
 $uiTimer.Interval = 1000
 $uiTimer.Add_Tick({
     try {
+        Update-ConfigFromDisk
         Update-Lanes
         Test-Alerts
         Test-Pings

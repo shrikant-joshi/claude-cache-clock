@@ -1,7 +1,7 @@
 {
   "name": "cache-clock",
-  "version": "0.3.1",
-  "description": "Prompt-cache countdown for Claude Code on Windows: feeds an always-on-top widget with the server's cache receipts, alerts at T-15/10/5, and offers an opt-in keep-alive ping.",
+  "version": "0.4.0",
+  "description": "Prompt-cache countdown for Claude Code on macOS, Linux and Windows: a status line fed by the server's cache receipts, expiry alerts, and manual or automatic keep-alive pings. Includes an always-on-top widget add-on on Windows.",
   "author": {
     "name": "Shrikant Joshi"
   },
@@ -9,7 +9,8 @@
   "keywords": [
     "prompt-caching",
     "timer",
-    "widget",
-    "windows"
+    "statusline",
+    "keep-alive",
+    "widget"
   ]
 }
