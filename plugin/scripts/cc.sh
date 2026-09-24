@@ -49,11 +49,13 @@ write_host_info() {
 # Read the last receipt from the transcript into pending updates for the session file.
 update_from_transcript() {  # transcript, turn_started_at, state ttl
     tp=$1; turn=${2:-0}; old_ttl=$3
-    [ -n "$tp" ] && [ -f "$tp" ] || return 1
-    # The transcript is written asynchronously. Give it a moment to catch up with the last response.
-    i=0; u=''
-    while [ $i -lt 4 ]; do
-        u=$(tail -c 1048576 "$tp" 2>/dev/null | awk -f "$CC_AWK" -v mode=usage)
+    [ -n "$tp" ] || return 1
+    # The transcript is written asynchronously (on a session's first turn it may not exist yet).
+    # Give it a moment to catch up with the last response.
+    i=0; u=''; tries=8
+    [ "$turn" -gt 0 ] || tries=1   # SessionStart: take what's there, don't wait
+    while [ $i -lt $tries ]; do
+        [ -f "$tp" ] && u=$(tail -c 1048576 "$tp" 2>/dev/null | awk -f "$CC_AWK" -v mode=usage)
         if [ -n "$u" ]; then
             set -- $u
             [ "$1" -ge "$turn" ] && break

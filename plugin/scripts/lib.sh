@@ -65,9 +65,15 @@ cc_set() { CC_UPD="$CC_UPD$1	$2
 "; }
 
 # Merge CC_UPD into a flat JSON file, atomically (temp file + rename), then clear CC_UPD.
+# A mkdir lock keeps two writers (hook, status line, listener) from losing each other's fields.
 cc_write() {
-    f=$1
+    f=$1; lk="$f.lock"; n=0
+    until mkdir "$lk" 2>/dev/null; do
+        n=$((n + 1)); [ $n -ge 40 ] && { rmdir "$lk" 2>/dev/null; n=0; }   # stale lock from a killed writer
+        sleep 0.05 2>/dev/null || sleep 1
+    done
     { [ -f "$f" ] && cat "$f"; } | CC_UPD="$CC_UPD" awk -f "$CC_AWK" -v mode=merge > "$f.$$.tmp" && mv -f "$f.$$.tmp" "$f"
+    rmdir "$lk" 2>/dev/null
     CC_UPD=''
 }
 

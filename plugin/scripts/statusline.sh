@@ -75,7 +75,8 @@ if [ "$cfg_autoKeepAlive" = true ]; then
     n=-1
     if [ -n "$state" ] && [ -f "$state" ]; then
         eval "$(cc_fields "$(cat "$state")" s 'cache_read cache_write auto_spent')"
-        n=$(cc_auto_left "${s_cache_read:-0}" "${s_cache_write:-0}" "${s_auto_spent:-0}" "$cfg_autoKeepAliveBudget")
+        c=$(( ${s_cache_read:-0} + ${s_cache_write:-0} )); [ "$c" -gt 0 ] || c=$ctx_tokens
+        n=$(cc_auto_left "$c" 0 "${s_auto_spent:-0}" "$cfg_autoKeepAliveBudget")
     fi
     if [ "$n" -lt 0 ]; then auto=', auto keep-alive on'
     elif [ "$n" -eq 0 ]; then auto=', auto keep-alive: budget used'

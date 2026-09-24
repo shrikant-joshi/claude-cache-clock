@@ -22,6 +22,18 @@ waiter="$CC_DIR/waiters/$safe.pid"
 
 # Newest listener wins. An older one sees a different PID in the file and quits.
 echo $$ > "$waiter"
+# Claude Code kills this listener (TERM) when the session ends, and then skips the SessionEnd
+# hook while an asyncRewake hook was still running (seen in 2.1.281). So the listener does the
+# session-end cleanup itself: if it's still the current listener, the session is over. A newer
+# listener means the session is alive, so leave its files alone. Sleep in the background and
+# wait for it: a trapped signal interrupts `wait` at once, a foreground sleep would delay it.
+sp=''
+on_signal() {
+    [ -n "$sp" ] && kill "$sp" 2>/dev/null
+    if [ "$(cat "$waiter" 2>/dev/null)" = "$$" ]; then rm -f "$state" "$ping" "$waiter"; fi
+    exit 0
+}
+trap on_signal HUP INT TERM
 started=$(cc_now)
 fired=' '
 
@@ -32,13 +44,16 @@ wake() {
 }
 
 while :; do
-    sleep 2
+    sleep 2 </dev/null >/dev/null 2>&1 &
+    sp=$!
+    wait "$sp"
+    sp=''
     now=$(cc_now)
     owner=$(cat "$waiter" 2>/dev/null) || exit 0
     [ "$owner" = "$$" ] || exit 0
     [ $((now - started)) -gt 7200 ] && exit 0
     [ -f "$state" ] || continue   # the Stop hook may still be writing it
-    eval "$(cc_fields "$(cat "$state")" s 'status expires_at ttl_s cache_read cache_write auto_spent auto_pings project')"
+    eval "$(cc_fields "$(cat "$state")" s 'status expires_at ttl_s cache_read cache_write context_tokens auto_spent auto_pings project')"
     case "$s_expires_at" in ''|null|*[!0-9]*) s_expires_at='' ;; esac
     cc_load_config
 
@@ -47,12 +62,14 @@ while :; do
         # Once the cache has gone cold, a ping would pay for a full rebuild. Stop listening.
         [ $left -lt -60 ] && exit 0
         auto_left=0
-        [ "$cfg_autoKeepAlive" = true ] && auto_left=$(cc_auto_left "${s_cache_read:-0}" "${s_cache_write:-0}" "${s_auto_spent:-0}" "$cfg_autoKeepAliveBudget")
+        ctx=$(( ${s_cache_read:-0} + ${s_cache_write:-0} ))
+        [ "$ctx" -gt 0 ] || ctx=${s_context_tokens:-0}   # no receipt yet: the status line's context size
+        [ "$cfg_autoKeepAlive" = true ] && auto_left=$(cc_auto_left "$ctx" 0 "${s_auto_spent:-0}" "$cfg_autoKeepAliveBudget")
 
         # Auto keep-alive: ping shortly before expiry, while the budget allows.
         if [ "$s_status" != working ] && [ $left -gt 5 ] && [ $left -le "$cfg_autoKeepAliveAt" ] && [ "$auto_left" -gt 0 ]; then
             cc_set auto_pings $(( ${s_auto_pings:-0} + 1 ))
-            cc_set auto_spent $(( ${s_auto_spent:-0} + ${s_cache_read:-0} + ${s_cache_write:-0} ))
+            cc_set auto_spent $(( ${s_auto_spent:-0} + ctx ))
             cc_set last_auto_ping_at "$now"
             cc_write "$state"
             wake 'Automatic keep-alive ping to keep the prompt cache warm.'

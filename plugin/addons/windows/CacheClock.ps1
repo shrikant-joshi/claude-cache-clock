@@ -250,6 +250,7 @@ function Test-ClaudeForeground {
 function Get-AutoPingsLeft($st) {
     # Same rule as the plugin's listener: each auto ping re-reads the whole context.
     $ctx = [long]$st.cache_read + [long]$st.cache_write
+    if ($ctx -le 0) { $ctx = [long]$st.context_tokens }   # no receipt yet: the status line's context size
     if ($ctx -le 0) { return -1 }
     $left = [long]$script:Cfg.autoKeepAliveBudget - [long]$st.auto_spent
     if ($left -le 0) { return 0 }
