@@ -1,0 +1,56 @@
+{
+  "description": "Cache Clock: track the main chat's prompt-cache TTL from the API usage receipts. Runs Windows PowerShell from WSL or Git Bash; does nothing elsewhere.",
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "sh \"${CLAUDE_PLUGIN_ROOT}/scripts/run.sh\" cc-hook.ps1 start",
+            "timeout": 20
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "sh \"${CLAUDE_PLUGIN_ROOT}/scripts/run.sh\" cc-hook.ps1 prompt",
+            "timeout": 15,
+            "async": true
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "sh \"${CLAUDE_PLUGIN_ROOT}/scripts/run.sh\" cc-hook.ps1 stop",
+            "timeout": 20
+          },
+          {
+            "type": "command",
+            "command": "sh \"${CLAUDE_PLUGIN_ROOT}/scripts/run.sh\" cc-waiter.ps1",
+            "asyncRewake": true,
+            "timeout": 7500
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "sh \"${CLAUDE_PLUGIN_ROOT}/scripts/run.sh\" cc-hook.ps1 end",
+            "timeout": 8
+          }
+        ]
+      }
+    ]
+  }
+}
