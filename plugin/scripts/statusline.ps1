@@ -17,6 +17,7 @@ if (-not $pc.caching_observed) { Write-Output 'cache: off'; exit 0 }
 $now = Get-Epoch
 $ttlS = if ($pc.ttl -eq '5m') { 300 } else { 3600 }
 
+$state = $null
 if ($in.session_id) {
     try {
         $statePath = Get-SessionStatePath ([string]$in.session_id)
@@ -37,6 +38,19 @@ if ($in.session_id) {
     } catch { }
 }
 
+# Auto keep-alive status, when it's on: how many pings the budget still allows for this context.
+$auto = ''
+try {
+    $cfg = Get-Config
+    if ([bool]$cfg.autoKeepAlive) {
+        $n = -1
+        if ($state) { $n = Get-AutoPingsLeft $state $cfg }
+        if ($n -lt 0) { $auto = ', auto keep-alive on' }
+        elseif ($n -eq 0) { $auto = ', auto keep-alive: budget used' }
+        else { $auto = ", auto keep-alive: $n left" }
+    }
+} catch { }
+
 # Pair this with "refreshInterval" in the statusLine settings so the countdown keeps moving.
 $left = 0
 if ($pc.expires_at) { $left = [long]$pc.expires_at - $now }
@@ -44,7 +58,7 @@ if ($pc.warm -and $left -gt 0) {
     $until = [DateTimeOffset]::FromUnixTimeSeconds([long]$pc.expires_at).ToLocalTime().ToString('HH:mm')
     $mins = [math]::Floor($left / 60)
     $leftText = if ($mins -ge 1) { "${mins}m left" } else { '<1m left' }
-    Write-Output ("cache {0}, warm until {1} ({2} TTL)" -f $leftText, $until, $pc.ttl)
+    Write-Output ("cache {0}, warm until {1} ({2} TTL){3}" -f $leftText, $until, $pc.ttl, $auto)
 } else {
     Write-Output ("cache cold ({0} TTL)" -f $pc.ttl)
 }

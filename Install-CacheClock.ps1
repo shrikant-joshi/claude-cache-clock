@@ -36,6 +36,7 @@ New-Item -ItemType Directory -Path $dest -Force | Out-Null
 Copy-Item (Join-Path $src 'widget\CacheClock.ps1') $dest -Force
 Copy-Item (Join-Path $src 'scripts\common.ps1') $dest -Force
 Copy-Item (Join-Path $src 'scripts\statusline.ps1') $dest -Force
+Copy-Item (Join-Path $src '.claude-plugin\plugin.json') $dest -Force   # version, for the widget and plugin sync
 Get-ChildItem $dest -Filter *.ps1 | Unblock-File
 
 $widget = Join-Path $dest 'CacheClock.ps1'

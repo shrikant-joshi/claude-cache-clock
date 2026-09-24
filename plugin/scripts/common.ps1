@@ -141,6 +141,79 @@ function Get-LastUsage([string]$transcriptPath) {
     return $result
 }
 
+function Get-Config {
+    # Widget settings the hooks also need. The widget writes config.json; missing keys get defaults.
+    $cfg = [pscustomobject]@{
+        autoKeepAlive       = $false
+        autoKeepAliveAt     = 60        # seconds before expiry
+        autoKeepAliveBudget = 1000000   # cached tokens auto pings may re-read per idle stretch
+    }
+    $loaded = Read-JsonFile (Join-Path (Get-BaseDir) 'config.json')
+    if ($loaded) {
+        foreach ($p in $cfg.PSObject.Properties) {
+            if ($loaded.PSObject.Properties[$p.Name]) { $cfg.($p.Name) = $loaded.($p.Name) }
+        }
+    }
+    return $cfg
+}
+
+function Get-AutoPingsLeft($State, $Cfg) {
+    # How many more automatic pings fit in the budget. Each ping re-reads the whole context,
+    # so a bigger conversation gets fewer pings. Returns -1 if the context size is unknown.
+    $ctx = [long]$State.cache_read + [long]$State.cache_write
+    if ($ctx -le 0) { return -1 }
+    $left = [long]$Cfg.autoKeepAliveBudget - [long]$State.auto_spent
+    if ($left -le 0) { return 0 }
+    return [int][math]::Floor($left / $ctx)
+}
+
+function Get-ManifestVersion([string]$path) {
+    $m = Read-JsonFile $path
+    if (-not $m -or -not $m.version) { return $null }
+    try { return [version]([string]$m.version) } catch { return $null }
+}
+
+function Stop-Widget {
+    $pidFile = Join-Path (Get-BaseDir) 'widget.pid'
+    if (-not (Test-Path -LiteralPath $pidFile)) { return }
+    $wpid = 0
+    [void][int]::TryParse((Get-Content -LiteralPath $pidFile -Raw).Trim(), [ref]$wpid)
+    if ($wpid) { Stop-Process -Id $wpid -Force -ErrorAction SilentlyContinue }
+}
+
+function Sync-InstalledWidget {
+    # Plugin updates only replace the plugin's own copy. Bring the installed widget and status line
+    # in %LOCALAPPDATA% up to the plugin's version, and restart the widget. Only ever upgrades,
+    # so two sessions on different plugin versions don't flip-flop.
+    if ($env:OS -ne 'Windows_NT') { return }
+    $dest = Join-Path $env:LOCALAPPDATA 'CacheClock'
+    if (-not (Test-Path -LiteralPath (Join-Path $dest 'CacheClock.ps1'))) { return }   # not installed
+    $root = Split-Path -Parent $PSScriptRoot
+    $mine = Get-ManifestVersion (Join-Path $root '.claude-plugin\plugin.json')
+    if (-not $mine) { return }
+    $installed = Get-ManifestVersion (Join-Path $dest 'plugin.json')
+    if ($installed -and $mine -le $installed) { return }
+    Stop-Widget
+    Copy-Item -LiteralPath (Join-Path $root 'widget\CacheClock.ps1') -Destination $dest -Force
+    Copy-Item -LiteralPath (Join-Path $root 'scripts\common.ps1') -Destination $dest -Force
+    Copy-Item -LiteralPath (Join-Path $root 'scripts\statusline.ps1') -Destination $dest -Force
+    Copy-Item -LiteralPath (Join-Path $root '.claude-plugin\plugin.json') -Destination $dest -Force
+    Get-ChildItem -LiteralPath $dest -Filter *.ps1 | Unblock-File -ErrorAction SilentlyContinue
+}
+
+function Write-HostInfo {
+    # Tells the widget where Claude Code runs, so "Check for updates" can call the right claude CLI.
+    $root = Split-Path -Parent $PSScriptRoot
+    $ver = Get-ManifestVersion (Join-Path $root '.claude-plugin\plugin.json')
+    $info = [pscustomobject]@{
+        env            = $(if ($env:CACHE_CLOCK_WSL_DISTRO) { 'wsl' } else { 'windows' })
+        distro         = [string]$env:CACHE_CLOCK_WSL_DISTRO
+        plugin_version = $(if ($ver) { [string]$ver } else { '' })
+        updated_at     = Get-Epoch
+    }
+    Write-JsonFile (Join-Path (Get-BaseDir) 'host.json') $info
+}
+
 function Start-WidgetIfNeeded {
     if ($env:OS -ne 'Windows_NT') { return }
     if ($env:CACHE_CLOCK_NO_AUTOSTART -eq '1') { return }

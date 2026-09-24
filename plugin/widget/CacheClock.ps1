@@ -6,6 +6,8 @@
 #   Claude Code (exact): fed by the cache-clock plugin's hooks, which read the API's usage receipts.
 #
 # Alerts: Windows notifications at T-15, T-10 and T-5 (T-2 and T-1 for 5-minute caches).
+# Auto keep-alive (opt-in): the plugin's listener pings Claude Code at T-60s, within a token budget.
+# Closes itself when neither the Claude app nor a Claude Code session is running (opt-out).
 # Run:    powershell.exe -NoProfile -ExecutionPolicy Bypass -STA -WindowStyle Hidden -File CacheClock.ps1
 # Data:   %USERPROFILE%\.cache-clock\  (config.json, manual.json, sessions\, pings\)
 # Needs Windows PowerShell 5.1 (built into Windows 10/11). Nothing to install.
@@ -65,6 +67,14 @@ $script:PidPath = Join-Path $script:Base 'widget.pid'
 [IO.File]::WriteAllText($script:PidPath, [string]$PID)
 
 function Get-Epoch { [DateTimeOffset]::UtcNow.ToUnixTimeSeconds() }
+
+# Version: plugin.json next to the installed copy, or the plugin's manifest when run from the plugin.
+$script:Version = '?'
+foreach ($mp in @((Join-Path $PSScriptRoot 'plugin.json'), (Join-Path (Split-Path -Parent $PSScriptRoot) '.claude-plugin\plugin.json'))) {
+    try {
+        if (Test-Path -LiteralPath $mp) { $script:Version = [string](Get-Content -LiteralPath $mp -Raw | ConvertFrom-Json).version; break }
+    } catch { }
+}
 function Write-Log([string]$msg) {
     try {
         $log = Join-Path $script:Base 'widget.log'
@@ -100,6 +110,10 @@ $script:Cfg = [ordered]@{
     claudeProcesses  = @('claude')      # process names that count as "the Claude app"
     showManual       = $true
     opacity          = 0.93
+    autoKeepAlive       = $false    # Claude Code: ping automatically before the cache expires
+    autoKeepAliveAt     = 60        # seconds before expiry
+    autoKeepAliveBudget = 1000000   # cached tokens auto pings may re-read per idle stretch
+    autoExit         = $true        # close when no Claude app and no Claude Code session is running
 }
 $loaded = Read-Json $script:ConfigPath
 if ($loaded) {
@@ -125,6 +139,11 @@ $script:FlashUntil = 0
 $script:HoverRow = -1
 $script:DragFrom = $null
 $script:LastTopMost = 0
+$script:StartedAt = Get-Epoch
+$script:CodeActive = $false  # a Claude Code session file looks alive
+$script:LastClaudeSeen = Get-Epoch
+$script:LastProcCheck = 0
+$script:Upd = $null          # running "check for updates" process
 
 # ---------- colors and fonts ----------
 $C = @{
@@ -178,7 +197,7 @@ $tip.AutoPopDelay = 20000
 # ---------- tray icon (also used for notifications) ----------
 $notify = New-Object System.Windows.Forms.NotifyIcon
 $notify.Icon = [System.Drawing.SystemIcons]::Information
-$notify.Text = 'Cache Clock'
+$notify.Text = "Cache Clock $($script:Version)"
 $notify.Visible = $true
 
 function Show-Alert([string]$title, [string]$text, [string]$kind = 'Warning') {
@@ -210,6 +229,95 @@ function Test-ClaudeForeground {
         $name = (Get-Process -Id $fp -ErrorAction Stop).ProcessName
         return (@($script:Cfg.claudeProcesses) -contains $name)
     } catch { return $false }
+}
+
+function Get-AutoPingsLeft($st) {
+    # Same rule as the plugin's listener: each auto ping re-reads the whole context.
+    $ctx = [long]$st.cache_read + [long]$st.cache_write
+    if ($ctx -le 0) { return -1 }
+    $left = [long]$script:Cfg.autoKeepAliveBudget - [long]$st.auto_spent
+    if ($left -le 0) { return 0 }
+    return [int][math]::Floor($left / $ctx)
+}
+
+# ---------- auto-exit ----------
+function Test-AutoExit {
+    # Close when neither the Claude app nor Claude Code has been around for a minute.
+    # A grace period after start covers logging in before the Claude app is up.
+    if (-not [bool]$script:Cfg.autoExit) { return }
+    $now = Get-Epoch
+    if (($now - $script:LastProcCheck) -lt 5) { return }
+    $script:LastProcCheck = $now
+    $app = @(Get-Process -Name @($script:Cfg.claudeProcesses) -ErrorAction SilentlyContinue).Count -gt 0
+    if ($app -or $script:CodeActive) { $script:LastClaudeSeen = $now; return }
+    if (($now - $script:StartedAt) -lt 180) { return }
+    if (($now - $script:LastClaudeSeen) -ge 60) {
+        Write-Log 'no Claude app or Claude Code session running: exiting'
+        $form.Close()
+    }
+}
+
+# ---------- check for updates ----------
+function Start-UpdateCheck {
+    # Runs the claude CLI where Claude Code lives (WSL or Windows, recorded by the plugin's
+    # SessionStart hook): refresh the marketplace, then update the plugin.
+    if ($script:Upd) { return }
+    $h = Read-Json (Join-Path $script:Base 'host.json')
+    $cmd = 'claude plugin marketplace update cache-clock && claude plugin update cache-clock@cache-clock --json'
+    $psi = New-Object System.Diagnostics.ProcessStartInfo
+    if ($h -and $h.env -eq 'wsl' -and $h.distro) {
+        $psi.FileName = 'wsl.exe'
+        # -e runs sh directly: with --, the user's login shell would expand $PATH (and its "(x86)") first.
+        $psi.Arguments = '-d ' + $h.distro + ' -e sh -lc "PATH=$HOME/.local/bin:$PATH; ' + $cmd + '"'
+    } else {
+        $psi.FileName = 'cmd.exe'
+        $psi.Arguments = '/d /c "' + $cmd + '"'
+    }
+    $psi.UseShellExecute = $false
+    $psi.CreateNoWindow = $true
+    $psi.RedirectStandardOutput = $true
+    $psi.RedirectStandardError = $true
+    $psi.StandardOutputEncoding = New-Object Text.UTF8Encoding($false)
+    $psi.StandardErrorEncoding = New-Object Text.UTF8Encoding($false)
+    try {
+        $proc = [System.Diagnostics.Process]::Start($psi)
+        # Drain both pipes in the background so a chatty CLI can't block on a full pipe.
+        $script:Upd = @{ proc = $proc; out = $proc.StandardOutput.ReadToEndAsync(); err = $proc.StandardError.ReadToEndAsync(); started = Get-Epoch }
+        Show-Alert 'Cache Clock' 'Checking for updates...' 'Info'
+    } catch {
+        Show-Alert 'Cache Clock' "Couldn't run the claude CLI: $_" 'Error'
+    }
+}
+
+function Test-UpdateCheck {
+    $u = $script:Upd
+    if (-not $u) { return }
+    if (-not $u.proc.HasExited) {
+        if (((Get-Epoch) - $u.started) -gt 180) {
+            try { $u.proc.Kill() } catch { }
+            $script:Upd = $null
+            Show-Alert 'Cache Clock' 'The update check timed out.' 'Error'
+        }
+        return
+    }
+    if (-not ($u.out.IsCompleted -and $u.err.IsCompleted)) { return }
+    $script:Upd = $null
+    $text = ($u.out.Result + "`n" + $u.err.Result) -replace '\x1b\[[0-9;]*[A-Za-z]', ''
+    Write-Log "update check (exit $($u.proc.ExitCode)): $($text.Trim())"
+    $res = $null
+    foreach ($line in ($text -split "`n")) {
+        if ($line.TrimStart().StartsWith('{')) { try { $res = $line | ConvertFrom-Json } catch { } }
+    }
+    if ($res -and $res.updateOutcome -eq 'up_to_date') {
+        Show-Alert 'Cache Clock' "You're on the latest version ($($res.newVersion))." 'Info'
+    } elseif ($res -and $res.outcome -eq 'ok') {
+        Show-Alert 'Cache Clock' "Updated $($res.oldVersion) to $($res.newVersion). Restart Claude Code to apply it. The widget updates itself when the next session starts." 'Info'
+    } else {
+        $msg = $(if ($res -and $res.message) { [string]$res.message } else { (@($text -split "`n" | Where-Object { $_.Trim() }) | Select-Object -Last 2) -join ' ' })
+        if (-not $msg) { $msg = "exit code $($u.proc.ExitCode)" }
+        if ($msg.Length -gt 200) { $msg = $msg.Substring(0, 200) + '...' }
+        Show-Alert 'Cache Clock: update check failed' $msg 'Error'
+    }
 }
 
 # ---------- lanes ----------
@@ -262,6 +370,7 @@ function Update-Lanes {
     }
 
     $dir = Join-Path $script:Base 'sessions'
+    $codeActive = $false
     foreach ($f in @(Get-ChildItem -LiteralPath $dir -Filter '*.json' -ErrorAction SilentlyContinue)) {
         $st = Read-Json $f.FullName
         if (-not $st -or -not $st.session_id) { continue }
@@ -273,6 +382,8 @@ function Update-Lanes {
         if (($exp -and ($now - $exp) -gt 6 * 3600) -or ($upd -and ($now - $upd) -gt 24 * 3600)) {
             Remove-Item -LiteralPath $f.FullName -ErrorAction SilentlyContinue; continue
         }
+        # For auto-exit: a session that's working, recently updated, or not long cold counts as running.
+        if ($st.status -eq 'working' -or ($upd -and ($now - $upd) -lt 120) -or ($exp -and ($now - $exp) -le 1800) -or (-not $exp -and ($now - $upd) -lt 3600)) { $codeActive = $true }
         if ($exp -and ($now - $exp) -gt 1800 -and $st.status -ne 'working') { continue }   # cold for 30+ min: hide
 
         $status = 'timer'
@@ -280,6 +391,10 @@ function Update-Lanes {
         elseif ($st.caching_observed -eq $false) { $status = 'nocache' }
         elseif (-not $exp) { $status = 'idle' }
         if ($script:Pings.ContainsKey($sid) -and $status -eq 'timer') { $status = 'pinging' }
+        $autoAt = [long]$st.last_auto_ping_at
+        if ($status -eq 'timer' -and $autoAt -and $autoAt -ge [long]$st.last_response_at -and ($now - $autoAt) -lt 90) { $status = 'pinging' }
+        $autoLeft = -1
+        if ([bool]$script:Cfg.autoKeepAlive) { $autoLeft = Get-AutoPingsLeft $st }
 
         $ttl = [int]$st.ttl_s; if (-not $ttl) { $ttl = 3600 }
         $ttlLabel = $(if ($ttl -le 300) { '5m' } else { '1h' })
@@ -288,22 +403,33 @@ function Update-Lanes {
             key = "cc:$sid"; kind = 'cc'; sid = $sid
             title = "Code: $proj"; badge = $ttlLabel
             ttl = $ttl; expires = $exp; status = $status; tip = ''
+            auto = ([bool]$script:Cfg.autoKeepAlive -and $autoLeft -ne 0)
         }
+        if ($lane.auto) { $lane.badge = "$ttlLabel auto" }
         $lines = @("Claude Code: $($st.cwd)", "TTL $ttlLabel, from the server's usage receipts ($($st.basis)).")
         if ($st.last_response_at) {
             $rb = $(if ($st.rebuilt) { '  (this turn rebuilt the cache)' } else { '' })
             $lines += "Last response $(Format-Clock ([long]$st.last_response_at)): read $(Format-K $st.cache_read), wrote $(Format-K $st.cache_write)$rb"
         }
         if ($exp) { $lines += "Expires $(Format-Clock $exp)" }
+        if ([bool]$script:Cfg.autoKeepAlive) {
+            $ctxK = Format-K ([long]$st.cache_read + [long]$st.cache_write)
+            if ($autoLeft -lt 0) { $lines += "Auto keep-alive: on, pings at T-$($script:Cfg.autoKeepAliveAt)s." }
+            elseif ($autoLeft -eq 0) { $lines += "Auto keep-alive: budget used for this idle stretch (context $ctxK). Send a message to refill it." }
+            else { $lines += "Auto keep-alive: on, $autoLeft ping(s) left in the budget (context $ctxK)." }
+        } else {
+            $lines += 'Auto keep-alive: off (right-click to turn on).'
+        }
         $lines += 'Right-click: keep alive (sends a tiny turn, uses a little of your plan).'
         $lane.tip = $lines -join "`n"
         [void]$lanes.Add($lane)
     }
 
     if ($lanes.Count -eq 0) {
-        [void]$lanes.Add([pscustomobject]@{ key = 'none'; kind = 'none'; sid = $null; title = 'Cache Clock'; badge = ''; ttl = 3600; expires = 0; status = 'idle'; tip = 'No timers. Turn on the Chat / Cowork timer from the right-click menu.' })
+        [void]$lanes.Add([pscustomobject]@{ key = 'none'; kind = 'none'; sid = $null; title = 'Cache Clock'; badge = ''; ttl = 3600; expires = 0; status = 'idle'; tip = "Cache Clock $($script:Version)`nNo timers. Turn on the Chat / Cowork timer from the right-click menu." })
     }
     $script:Lanes = $lanes.ToArray()
+    $script:CodeActive = $codeActive
     $h = $script:Lanes.Count * $script:RowH + 2 * $script:Pad
     if ($form.Height -ne $h) {
         $bottom = $form.Bottom
@@ -333,6 +459,7 @@ function Test-Alerts {
         }
 
         $ths = $(if ($lane.ttl -ge 900) { @($script:Cfg.thresholds) } else { @($script:Cfg.shortThresholds) })
+        if ($lane.auto) { continue }   # auto keep-alive will ping before it expires
         $crossed = @($ths | Where-Object { $r -le ([int]$_ * 60) -and -not $fired.ContainsKey([string]$_) })
         if ($crossed.Count -gt 0) {
             foreach ($t in $crossed) { $fired[[string]$t] = $true }
@@ -394,12 +521,14 @@ $form.Add_Paint({
 
         $tx = $pad + $d + (Px 8)
         $titleSize = [System.Windows.Forms.TextRenderer]::MeasureText($lane.title, $FontTitle)
-        $maxTitle = $w - $tx - $timeW - $pad - (Px 26)
+        $badgeW = 0; if ($lane.badge) { $badgeW = [System.Windows.Forms.TextRenderer]::MeasureText($lane.badge, $FontBadge).Width }
+        $maxTitle = $w - $tx - $timeW - $pad - $badgeW - (Px 8)
         $tw = [math]::Min($titleSize.Width, $maxTitle)
         $flags = [System.Windows.Forms.TextFormatFlags]'Left, VerticalCenter, EndEllipsis, NoPadding'
         [System.Windows.Forms.TextRenderer]::DrawText($g, $lane.title, $FontTitle, (New-Object System.Drawing.Rectangle($tx, $y, $tw, $rh)), $C.Text, $flags)
         if ($lane.badge) {
-            [System.Windows.Forms.TextRenderer]::DrawText($g, $lane.badge, $FontBadge, (New-Object System.Drawing.Rectangle(($tx + $tw + (Px 4)), $y, (Px 30), $rh)), $C.Muted, $flags)
+            $bw = [System.Windows.Forms.TextRenderer]::MeasureText($lane.badge, $FontBadge).Width
+            [System.Windows.Forms.TextRenderer]::DrawText($g, $lane.badge, $FontBadge, (New-Object System.Drawing.Rectangle(($tx + $tw + (Px 4)), $y, $bw, $rh)), $(if ($lane.auto) { $C.Green } else { $C.Muted }), $flags)
         }
         $rflags = [System.Windows.Forms.TextFormatFlags]'Right, VerticalCenter, NoPadding'
         [System.Windows.Forms.TextRenderer]::DrawText($g, (Get-LaneText $lane $now), $FontTime, (New-Object System.Drawing.Rectangle(($w - $pad - $timeW), $y, $timeW, $rh)), $col, $rflags)
@@ -466,6 +595,8 @@ function Add-MenuItem($menu, [string]$text, [scriptblock]$action, [bool]$checked
 function New-RowMenu([int]$row) {
     $menu = New-Object System.Windows.Forms.ContextMenuStrip
     $lane = $null; if ($row -ge 0) { $lane = $script:Lanes[$row] }
+    [void](Add-MenuItem $menu "Cache Clock $($script:Version)" { } $false $false)
+    [void]$menu.Items.Add((New-Object System.Windows.Forms.ToolStripSeparator))
 
     if ($lane -and $lane.kind -eq 'manual') {
         [void](Add-MenuItem $menu 'I just sent a message (reset)' { Reset-Manual })
@@ -487,6 +618,11 @@ function New-RowMenu([int]$row) {
         $script:Cfg.autoResetOnEnter = -not [bool]$script:Cfg.autoResetOnEnter; Save-Config } ([bool]$script:Cfg.autoResetOnEnter))
     [void](Add-MenuItem $menu 'Show Chat / Cowork timer' {
         $script:Cfg.showManual = -not [bool]$script:Cfg.showManual; Save-Config; Update-Lanes; $form.Invalidate() } ([bool]$script:Cfg.showManual))
+    [void](Add-MenuItem $menu "Auto keep-alive for Claude Code (at T-$($script:Cfg.autoKeepAliveAt)s)" {
+        $script:Cfg.autoKeepAlive = -not [bool]$script:Cfg.autoKeepAlive; Save-Config; Update-Lanes; $form.Invalidate() } ([bool]$script:Cfg.autoKeepAlive))
+    [void](Add-MenuItem $menu 'Close when Claude is not running' {
+        $script:Cfg.autoExit = -not [bool]$script:Cfg.autoExit; Save-Config } ([bool]$script:Cfg.autoExit))
+    [void](Add-MenuItem $menu 'Check for updates' { Start-UpdateCheck } $false ($null -eq $script:Upd))
     [void](Add-MenuItem $menu 'Open data folder' { Start-Process explorer.exe $script:Base })
     [void](Add-MenuItem $menu 'Exit Cache Clock' { $form.Close() })
     return $menu
@@ -496,6 +632,7 @@ function New-RowMenu([int]$row) {
 $trayMenu = New-Object System.Windows.Forms.ContextMenuStrip
 [void](Add-MenuItem $trayMenu 'Reset Chat / Cowork timer' { Reset-Manual })
 [void](Add-MenuItem $trayMenu 'Show / hide widget' { $form.Visible = -not $form.Visible })
+[void](Add-MenuItem $trayMenu 'Check for updates' { Start-UpdateCheck })
 [void](Add-MenuItem $trayMenu 'Move widget to default spot' { Set-DefaultPosition; $script:Cfg.x = $form.Left; $script:Cfg.y = $form.Top; Save-Config })
 [void](Add-MenuItem $trayMenu 'Exit Cache Clock' { $form.Close() })
 $notify.ContextMenuStrip = $trayMenu
@@ -509,6 +646,8 @@ $uiTimer.Add_Tick({
         Update-Lanes
         Test-Alerts
         Test-Pings
+        Test-UpdateCheck
+        Test-AutoExit
         $now = Get-Epoch
         if (($now - $script:LastTopMost) -ge 10) { $form.TopMost = $false; $form.TopMost = $true; $script:LastTopMost = $now }
         $form.Invalidate()

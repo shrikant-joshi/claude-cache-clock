@@ -73,11 +73,21 @@ switch ($HookEvent) {
         Set-Prop $state 'status' 'idle'
         [void](Update-FromTranscript $state $transcript 0)
         Write-JsonFile $statePath $state
+        try { Write-HostInfo } catch { }
+        try { Sync-InstalledWidget } catch { }
         Start-WidgetIfNeeded
     }
     'prompt' {
         Set-Prop $state 'status' 'working'
         Set-Prop $state 'turn_started_at' $now
+        # A real message from the user starts a new idle stretch: refill the auto keep-alive budget.
+        # Keep-alive wake-ups carry the [cache-clock] tag, and may or may not fire this hook.
+        $isPing = ([string]$hook.prompt).Contains('[cache-clock]') -or
+            ($state.last_auto_ping_at -and ($now - [long]$state.last_auto_ping_at) -lt 30)
+        if (-not $isPing) {
+            Set-Prop $state 'auto_pings' 0
+            Set-Prop $state 'auto_spent' 0
+        }
         Write-JsonFile $statePath $state
     }
     'stop' {
