@@ -100,6 +100,13 @@ function Write-Json([string]$path, $obj) {
 }
 function Format-Clock([long]$ts) { [DateTimeOffset]::FromUnixTimeSeconds($ts).ToLocalTime().ToString('HH:mm:ss') }
 function Format-K($n) { if ($null -eq $n) { return '?' }; '{0:N0}k' -f ([double]$n / 1000) }
+# Dollars as the status line prints them: cents under $100, whole dollars above.
+function Format-Usd($n) {
+    $v = [double]$n; $ic = [Globalization.CultureInfo]::InvariantCulture
+    if ($v -lt 0.01) { return '<$0.01' }
+    if ($v -lt 100) { return '$' + $v.ToString('0.00', $ic) }
+    '$' + $v.ToString('0', $ic)
+}
 
 # ---------- config ----------
 $script:Cfg = [ordered]@{
@@ -434,6 +441,21 @@ function Update-Lanes {
             if ([long]$st.context_max -gt 0) { $cl += " of $(Format-K $st.context_max) ($([math]::Round(100.0 * [long]$st.context_tokens / [long]$st.context_max))%)" }
             $lines += $cl
         }
+        # Costs come from the status line (API prices for this model); absent without it.
+        $rbTok = [long]$st.rebuild_tokens
+        if ($rbTok -gt 0) {
+            $cold = ($st.warm -eq $false) -or ($exp -and $now -ge $exp)
+            $hasCost = ($null -ne $st.rebuild_usd)
+            if ($cold) {
+                $cl = "Cold: next message rebuilds $(Format-K $rbTok) tokens"
+                if ($hasCost) { $cl += ", ~$(Format-Usd $st.rebuild_usd)" }
+                $lines += $cl
+            } elseif ($hasCost) {
+                $lines += "Keep-alive ~$(Format-Usd $st.ping_usd), rebuild ~$(Format-Usd $st.rebuild_usd) ($(Format-K $rbTok) tokens, API prices)"
+            }
+        }
+        $ms = [long]$st.misses
+        if ($ms -eq 1) { $lines += '1 cache miss this session' } elseif ($ms -gt 1) { $lines += "$ms cache misses this session" }
         if ([bool]$script:Cfg.autoKeepAlive) {
             $ctxK = Format-K ([long]$st.cache_read + [long]$st.cache_write)
             if ($autoLeft -lt 0) { $lines += "Auto keep-alive: on, pings at T-$($script:Cfg.autoKeepAliveAt)s." }

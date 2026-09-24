@@ -67,6 +67,25 @@ fi
 ttl_s=3600; [ "$pc_ttl" = 5m ] && ttl_s=300
 case "$pc_expires_at" in ''|null|*[!0-9]*) pc_expires_at='' ;; esac
 
+# What a keep-alive ping (cache read) and a rebuild (cache write at this TTL) cost at API prices.
+# Claude Code reports the exact rebuild size; fall back to the context size.
+rb=${pc_recache_tokens_if_cold:-}
+case "$rb" in ''|*[!0-9]*) rb=0 ;; esac
+[ "$rb" -gt 0 ] || rb=$ctx_tokens
+ping_usd=''; rebuild_usd=''; ping_n=null; rebuild_n=null
+if [ "$cfg_showCost" != false ] && [ "$rb" -gt 0 ] && [ -n "$mdl_id" ]; then
+    pr=$(cc_price "$mdl_id")
+    if [ -n "$pr" ]; then
+        set -- $(awk -v t="$rb" -v ttl="$pc_ttl" -v p="$pr" 'BEGIN {
+            split(p, a, " "); in_ = a[1]; w = (ttl == "5m") ? a[2] : a[3]; r = a[4]
+            if (w == "-" || w == "") w = in_ * (ttl == "5m" ? 1.25 : 2)
+            if (r == "-" || r == "") r = in_ * 0.1
+            printf "%.6f %.6f\n", t * r / 1000000, t * w / 1000000 }')
+        ping_n=$1; rebuild_n=$2
+        ping_usd=$(fmt_usd "$1"); rebuild_usd=$(fmt_usd "$2")
+    fi
+fi
+
 state=''
 if [ -n "$i_session_id" ]; then
     state="$CC_DIR/sessions/$(cc_safe_id "$i_session_id").json"
@@ -83,6 +102,10 @@ if [ -n "$i_session_id" ]; then
     cc_set caching_observed true
     cc_set misses "$(cc_jnum "$pc_misses")"
     cc_set basis '"statusline"'
+    cc_set model "$(cc_jstr "$mdl_id")"
+    cc_set rebuild_tokens "$rb"
+    cc_set ping_usd "$ping_n"
+    cc_set rebuild_usd "$rebuild_n"
     cc_set updated_at "$now"
     if [ "$ctx_tokens" -gt 0 ]; then
         cc_set context_tokens "$ctx_tokens"
@@ -104,24 +127,6 @@ if [ "$cfg_autoKeepAlive" = true ]; then
     else auto=" | $(paint "$GREEN" "auto on ($n)")"; fi
 else
     auto=" | $(paint "$GREY" 'auto off')"
-fi
-
-# What a keep-alive ping (cache read) and a rebuild (cache write at this TTL) cost at API prices.
-# Claude Code reports the exact rebuild size; fall back to the context size.
-rb=${pc_recache_tokens_if_cold:-}
-case "$rb" in ''|*[!0-9]*) rb=0 ;; esac
-[ "$rb" -gt 0 ] || rb=$ctx_tokens
-ping_usd=''; rebuild_usd=''
-if [ "$cfg_showCost" != false ] && [ "$rb" -gt 0 ] && [ -n "$mdl_id" ]; then
-    pr=$(cc_price "$mdl_id")
-    if [ -n "$pr" ]; then
-        set -- $(awk -v t="$rb" -v ttl="$pc_ttl" -v p="$pr" 'BEGIN {
-            split(p, a, " "); in_ = a[1]; w = (ttl == "5m") ? a[2] : a[3]; r = a[4]
-            if (w == "-" || w == "") w = in_ * (ttl == "5m" ? 1.25 : 2)
-            if (r == "-" || r == "") r = in_ * 0.1
-            printf "%.6f %.6f\n", t * r / 1000000, t * w / 1000000 }')
-        ping_usd=$(fmt_usd "$1"); rebuild_usd=$(fmt_usd "$2")
-    fi
 fi
 
 # Requests that re-processed what the cache already held (not counting compaction or clearing).
