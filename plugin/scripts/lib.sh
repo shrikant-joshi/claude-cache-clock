@@ -93,12 +93,51 @@ cc_basename() { printf '%s' "$1" | sed 's#\\#/#g; s#/*$##; s#.*/##'; }
 cc_load_config() {
     cfg=''
     [ -f "$CC_DIR/config.json" ] && cfg=$(cat "$CC_DIR/config.json")
-    eval "$(cc_fields "$cfg" cfg 'autoKeepAlive autoKeepAliveAt autoKeepAliveBudget thresholds shortThresholds')"
+    eval "$(cc_fields "$cfg" cfg 'autoKeepAlive autoKeepAliveAt autoKeepAliveBudget thresholds shortThresholds ctxThresholds color showCost')"
     [ -n "$cfg_autoKeepAlive" ] || cfg_autoKeepAlive=false
     [ -n "$cfg_autoKeepAliveAt" ] || cfg_autoKeepAliveAt=60
     [ -n "$cfg_autoKeepAliveBudget" ] || cfg_autoKeepAliveBudget=1000000
     cfg_thresholds=$(printf '%s' "${cfg_thresholds:-15,10,5}" | tr -cd '0-9,' | tr ',' ' ')
     cfg_shortThresholds=$(printf '%s' "${cfg_shortThresholds:-2,1}" | tr -cd '0-9,' | tr ',' ' ')
+    cfg_ctxThresholds=$(printf '%s' "${cfg_ctxThresholds:-25,40,60}" | tr -cd '0-9,' | tr ',' ' ')
+    [ -n "$cfg_color" ] || cfg_color=true
+    [ -n "$cfg_showCost" ] || cfg_showCost=true
+}
+
+# ---- Prices ----
+# API prices per model, "model input write5m write1h read" in $/MTok (- when unknown).
+# <data>/prices.txt is refreshed from LiteLLM's public price list at most once a day (SessionStart,
+# in the background). The built-in prices.txt next to the scripts is the fallback.
+CC_PRICES_URL=${CACHE_CLOCK_PRICES_URL:-https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json}
+
+cc_refresh_prices() {
+    f="$CC_DIR/prices.txt"
+    if [ -f "$f" ]; then
+        at=$(sed -n '1s/^# fetched //p' "$f"); case "$at" in ''|*[!0-9]*) at=0 ;; esac
+        [ $(( $(cc_now) - at )) -lt 86400 ] && return 0
+    fi
+    if command -v curl >/dev/null 2>&1; then get='curl -fsSL -m 30'
+    elif command -v wget >/dev/null 2>&1; then get='wget -qO- -T 30'
+    else return 0; fi
+    t="$f.$$.tmp"
+    $get "$CC_PRICES_URL" 2>/dev/null | awk -f "$CC_AWK" -v mode=prices > "$t.body"
+    # A handful of models at least, or it's not the file we expect: keep the old copy.
+    if [ "$(wc -l < "$t.body" | tr -d ' ')" -ge 3 ]; then
+        { echo "# fetched $(cc_now)"; cat "$t.body"; } > "$t" && mv -f "$t" "$f"
+    fi
+    rm -f "$t" "$t.body"
+}
+
+# Prices for a model id as Claude Code reports it. Strips [1m], provider prefixes and date/version
+# suffixes (us.anthropic.claude-x-20250101-v1:0, claude-x@20250101). Prints nothing if unknown.
+cc_price() {  # model_id
+    m=$(printf '%s' "$1" | sed 's/\[.*\]//; s/^.*claude-/claude-/; s/[@:].*//; s/-v[0-9]*$//; s/-[0-9]\{8\}$//')
+    case "$m" in claude-*) ;; *) return 0 ;; esac
+    for pf in "$CC_DIR/prices.txt" "$CC_HERE/prices.txt"; do
+        [ -f "$pf" ] || continue
+        r=$(awk -v m="$m" '$1 == m { print $2, $3, $4, $5; exit }' "$pf")
+        [ -n "$r" ] && { printf '%s\n' "$r"; return 0; }
+    done
 }
 
 # Auto pings left in the budget: each one re-reads the whole context. -1 if the size is unknown.

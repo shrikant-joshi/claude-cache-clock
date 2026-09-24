@@ -17,7 +17,7 @@ plugin_version() { cc_get "$(cat "$CC_ROOT/.claude-plugin/plugin.json" 2>/dev/nu
 sync_statusline() {
     sd=$(cc_stable_dir)
     mkdir -p "$sd" 2>/dev/null || return 0
-    for f in statusline.sh lib.sh json.awk; do
+    for f in statusline.sh lib.sh json.awk prices.txt; do
         cmp -s "$CC_HERE/$f" "$sd/$f" 2>/dev/null || cp -f "$CC_HERE/$f" "$sd/$f" 2>/dev/null
     done
 }
@@ -97,6 +97,7 @@ case "${1:-}" in
         printf '%s\n' "config: $f"
         printf '%s\n' "autoKeepAlive=$cfg_autoKeepAlive autoKeepAliveAt=$cfg_autoKeepAliveAt autoKeepAliveBudget=$cfg_autoKeepAliveBudget"
         printf '%s\n' "thresholds=$cfg_thresholds shortThresholds=$cfg_shortThresholds"
+        printf '%s\n' "ctxThresholds=$cfg_ctxThresholds color=$cfg_color showCost=$cfg_showCost"
         exit 0 ;;
     setup-info)
         sync_statusline
@@ -146,6 +147,8 @@ case "$ev" in
         cc_write "$state"
         write_host_info
         sync_statusline
+        cc_load_config
+        [ "$cfg_showCost" = false ] || (cc_refresh_prices </dev/null >/dev/null 2>&1 &)
         launch_widget
         ;;
     prompt)

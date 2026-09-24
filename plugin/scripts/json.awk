@@ -7,6 +7,8 @@
 #                              JSON object read from the input, print the result compactly
 #   usage                      read transcript JSONL, print "ts input read write ttl" for the last
 #                              main-chat API response with cache receipts
+#   prices                     read LiteLLM's model_prices_and_context_window.json, print one line per
+#                              Anthropic claude-* model: "model input write5m write1h read" in $/MTok
 # Keys are looked up with a regex on the raw text, like the transcript parsing: an unescaped
 # "key": can't occur inside a JSON string, where quotes are escaped. Lookups take the first match.
 
@@ -106,6 +108,30 @@ mode == "usage" {
     if (num($0, "ephemeral_1h_input_tokens") > 0) u_ttl = 3600
     else if (num($0, "ephemeral_5m_input_tokens") > 0) u_ttl = 300
     u_found = 1
+    next
+}
+
+# One model per top-level key. Nested objects are skipped by tracking brace depth.
+function p_mt(v) { return v == "" ? "-" : sprintf("%.6g", v * 1000000) }
+function p_emit() {
+    if (p_key ~ /^claude-[a-z0-9.-]+$/ && p_prov == "anthropic" && p_f["input_cost_per_token"] != "")
+        print p_key, p_mt(p_f["input_cost_per_token"]), p_mt(p_f["cache_creation_input_token_cost"]), \
+            p_mt(p_f["cache_creation_input_token_cost_above_1hr"]), p_mt(p_f["cache_read_input_token_cost"])
+}
+mode == "prices" {
+    line = $0
+    if (p_depth == 1 && match(line, /^[ \t]*"[^"]+"[ \t]*:[ \t]*\{/)) {
+        p_key = substr(line, RSTART, RLENGTH); sub(/^[ \t]*"/, "", p_key); sub(/"[ \t]*:.*/, "", p_key)
+        p_prov = ""; split("", p_f)
+    } else if (p_depth == 2 && match(line, /^[ \t]*"[a-z_0-9]+"[ \t]*:[ \t]*[^{\[]/)) {
+        k = line; sub(/^[ \t]*"/, "", k); sub(/".*/, "", k)
+        v = line; sub(/^[^:]*:[ \t]*/, "", v); sub(/[ \t]*,?[ \t\r]*$/, "", v); gsub(/"/, "", v)
+        if (k == "litellm_provider") p_prov = v
+        else p_f[k] = v
+    }
+    o = gsub(/\{/, "{", line); c = gsub(/\}/, "}", line)
+    if (p_depth == 2 && p_depth + o - c == 1) p_emit()
+    p_depth += o - c
     next
 }
 
