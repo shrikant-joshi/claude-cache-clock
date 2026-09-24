@@ -94,21 +94,21 @@ case "${1:-}" in
             cc_write "$f"
         fi
         cc_load_config
-        echo "config: $f"
-        echo "autoKeepAlive=$cfg_autoKeepAlive autoKeepAliveAt=$cfg_autoKeepAliveAt autoKeepAliveBudget=$cfg_autoKeepAliveBudget"
-        echo "thresholds=$cfg_thresholds shortThresholds=$cfg_shortThresholds"
+        printf '%s\n' "config: $f"
+        printf '%s\n' "autoKeepAlive=$cfg_autoKeepAlive autoKeepAliveAt=$cfg_autoKeepAliveAt autoKeepAliveBudget=$cfg_autoKeepAliveBudget"
+        printf '%s\n' "thresholds=$cfg_thresholds shortThresholds=$cfg_shortThresholds"
         exit 0 ;;
     setup-info)
         sync_statusline
         sd=$(cc_stable_dir)
-        echo "platform: $CC_PLATFORM"
-        echo "data_dir: $CC_DIR"
-        echo "settings_file: ${CLAUDE_CONFIG_DIR:-$HOME/.claude}/settings.json"
-        echo "statusline_command: sh \"$sd/statusline.sh\""
+        printf '%s\n' "platform: $CC_PLATFORM"
+        printf '%s\n' "data_dir: $CC_DIR"
+        printf '%s\n' "settings_file: ${CLAUDE_CONFIG_DIR:-$HOME/.claude}/settings.json"
+        printf '%s\n' "statusline_command: sh \"$sd/statusline.sh\""
         case $CC_PLATFORM in
-            wsl) echo "widget_install: powershell.exe -NoProfile -ExecutionPolicy Bypass -File \"$(wslpath -w "$CC_ROOT/addons/windows/install.ps1")\"" ;;
-            gitbash) echo "widget_install: powershell.exe -NoProfile -ExecutionPolicy Bypass -File \"$(cygpath -w "$CC_ROOT/addons/windows/install.ps1")\"" ;;
-            *) echo "widget_install: none (the widget is Windows-only)" ;;
+            wsl) printf '%s\n' "widget_install: powershell.exe -NoProfile -ExecutionPolicy Bypass -File \"$(wslpath -w "$CC_ROOT/addons/windows/install.ps1")\"" ;;
+            gitbash) printf '%s\n' "widget_install: powershell.exe -NoProfile -ExecutionPolicy Bypass -File \"$(cygpath -w "$CC_ROOT/addons/windows/install.ps1")\"" ;;
+            *) printf '%s\n' "widget_install: none (the widget is Windows-only)" ;;
         esac
         exit 0 ;;
 esac

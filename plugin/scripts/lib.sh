@@ -46,9 +46,12 @@ cc_data_dir() {
 }
 
 # Stable home for the status line script: plugin updates change the plugin path, not this one.
+# Only trust CLAUDE_PLUGIN_DATA if it's ours: a shell can inherit another plugin's value.
 cc_stable_dir() {
-    if [ -n "${CLAUDE_PLUGIN_DATA:-}" ]; then printf '%s\n' "$CLAUDE_PLUGIN_DATA"
-    else printf '%s\n' "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/data/cache-clock-cache-clock"; fi
+    case "${CLAUDE_PLUGIN_DATA:-}" in
+        */cache-clock-*) printf '%s\n' "$CLAUDE_PLUGIN_DATA" ;;
+        *) printf '%s\n' "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/data/cache-clock-cache-clock" ;;
+    esac
 }
 
 # ---- JSON ----
