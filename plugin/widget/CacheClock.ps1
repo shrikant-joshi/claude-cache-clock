@@ -412,6 +412,11 @@ function Update-Lanes {
             $lines += "Last response $(Format-Clock ([long]$st.last_response_at)): read $(Format-K $st.cache_read), wrote $(Format-K $st.cache_write)$rb"
         }
         if ($exp) { $lines += "Expires $(Format-Clock $exp)" }
+        if ([long]$st.context_tokens -gt 0) {
+            $cl = "Context: $(Format-K $st.context_tokens)"
+            if ([long]$st.context_max -gt 0) { $cl += " of $(Format-K $st.context_max) ($([math]::Round(100.0 * [long]$st.context_tokens / [long]$st.context_max))%)" }
+            $lines += $cl
+        }
         if ([bool]$script:Cfg.autoKeepAlive) {
             $ctxK = Format-K ([long]$st.cache_read + [long]$st.cache_write)
             if ($autoLeft -lt 0) { $lines += "Auto keep-alive: on, pings at T-$($script:Cfg.autoKeepAliveAt)s." }

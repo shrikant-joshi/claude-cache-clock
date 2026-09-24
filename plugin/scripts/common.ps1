@@ -129,6 +129,7 @@ function Get-LastUsage([string]$transcriptPath) {
             $tsm = [regex]::Match($line, '"timestamp":"([^"]+)"')
             $result = [pscustomobject]@{
                 ts    = $(if ($tsm.Success) { ConvertTo-Epoch $tsm.Groups[1].Value } else { 0 })
+                input = Get-JsonNumber $line 'input_tokens'
                 read  = Get-JsonNumber $line 'cache_read_input_tokens'
                 write = Get-JsonNumber $line 'cache_creation_input_tokens'
                 ttl_s = $null

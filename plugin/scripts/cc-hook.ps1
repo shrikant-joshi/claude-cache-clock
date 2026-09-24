@@ -56,6 +56,8 @@ function Update-FromTranscript {
     Set-Prop $State 'last_response_at' ([long]$last)
     Set-Prop $State 'cache_read' ([long]$info.read)
     Set-Prop $State 'cache_write' ([long]$info.write)
+    # Context size, as the status line counts it. The status line also knows the window size.
+    Set-Prop $State 'context_tokens' ([long]($info.input + $info.read + $info.write))
     Set-Prop $State 'caching_observed' ([bool]($info.read -gt 0 -or $info.write -gt 0))
     # A "rebuild" is a turn where the server wrote more than it read: model switch, compaction, expiry, etc.
     Set-Prop $State 'rebuilt' ([bool]($info.write -gt $info.read))
