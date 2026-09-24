@@ -2,7 +2,7 @@
   "name": "cache-clock",
   "description": "Prompt-cache countdown widget for Claude on Windows.",
   "owner": {
-    "name": "Shri (42Quirks)"
+    "name": "Shrikant Joshi"
   },
   "plugins": [
     {
