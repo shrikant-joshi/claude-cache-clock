@@ -57,20 +57,22 @@ data = {}
 if os.path.exists(p):
     with open(p) as f:
         data = json.load(f)
-if "statusLine" in data:
+sl = {"type": "command", "command": cmd, "refreshInterval": 30}
+existing = data.get("statusLine")
+if existing and "CacheClock" not in str(existing.get("command", "")):
     print("You already have a status line, so I left it alone. To use this one, set:")
-    print(json.dumps({"statusLine": {"type": "command", "command": cmd}}, indent=2))
+    print(json.dumps({"statusLine": sl}, indent=2))
 else:
     if os.path.exists(p):
         shutil.copy(p, p + ".bak")
-    data["statusLine"] = {"type": "command", "command": cmd}
+    data["statusLine"] = sl
     with open(p, "w") as f:
         json.dump(data, f, indent=2)
-    print("Status line added to " + p + " (backup: settings.json.bak if it existed).")
+    print("Status line set in " + p + " (backup: settings.json.bak if it existed).")
 PY
     else
         echo "python3 not found. Add this to $settings yourself:"
-        echo "  \"statusLine\": { \"type\": \"command\", \"command\": \"$(printf '%s' "$cmd" | sed 's/"/\\"/g')\" }"
+        echo "  \"statusLine\": { \"type\": \"command\", \"command\": \"$(printf '%s' "$cmd" | sed 's/"/\\"/g')\", \"refreshInterval\": 30 }"
     fi
 fi
 

@@ -57,16 +57,19 @@ if ($StatusLine) {
     $settingsPath = Join-Path $HOME '.claude\settings.json'
     $settings = $null
     if (Test-Path $settingsPath) { $settings = Get-Content $settingsPath -Raw | ConvertFrom-Json }
-    if ($settings -and $settings.PSObject.Properties['statusLine']) {
+    $sl = [pscustomobject]@{ type = 'command'; command = $slCmd; refreshInterval = 30 }
+    $existing = $null
+    if ($settings -and $settings.PSObject.Properties['statusLine']) { $existing = $settings.statusLine }
+    if ($existing -and ([string]$existing.command) -notmatch 'CacheClock') {
         Write-Host 'You already have a Claude Code status line, so I left it alone. To use this one, set:' -ForegroundColor Yellow
-        Write-Host "  `"statusLine`": { `"type`": `"command`", `"command`": `"$($slCmd -replace '"','\"')`" }"
+        Write-Host "  `"statusLine`": { `"type`": `"command`", `"command`": `"$($slCmd -replace '"','\"')`", `"refreshInterval`": 30 }"
     } else {
         if (-not $settings) { $settings = [pscustomobject]@{} }
         if (Test-Path $settingsPath) { Copy-Item $settingsPath "$settingsPath.bak" -Force }
         New-Item -ItemType Directory -Path (Split-Path $settingsPath) -Force | Out-Null
-        $settings | Add-Member -NotePropertyName statusLine -NotePropertyValue ([pscustomobject]@{ type = 'command'; command = $slCmd }) -Force
+        $settings | Add-Member -NotePropertyName statusLine -NotePropertyValue $sl -Force
         [IO.File]::WriteAllText($settingsPath, ($settings | ConvertTo-Json -Depth 20), (New-Object Text.UTF8Encoding($false)))
-        Write-Host "Status line added to $settingsPath (backup: settings.json.bak)."
+        Write-Host "Status line set in $settingsPath (backup: settings.json.bak)."
     }
 }
 

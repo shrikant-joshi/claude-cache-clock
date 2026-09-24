@@ -1,6 +1,6 @@
 {
   "name": "cache-clock",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Prompt-cache countdown for Claude Code on Windows: feeds an always-on-top widget with the server's cache receipts, alerts at T-15/10/5, and offers an opt-in keep-alive ping.",
   "author": { "name": "Shri (42Quirks)" },
   "keywords": ["prompt-caching", "timer", "widget", "windows"]

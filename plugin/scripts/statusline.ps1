@@ -1,7 +1,7 @@
 # Cache Clock: optional Claude Code status line.
 # Claude Code (v2.1.251+) passes a prompt_cache object computed from the server's usage receipts,
 # including the exact expires_at. This script prints it and hands it to the widget.
-# Shows an absolute time ("warm until 16:42") so it stays correct between refreshes.
+# Shows minutes left plus the absolute expiry time ("23m left, warm until 16:42").
 # Compatible with Windows PowerShell 5.1 and PowerShell 7.
 
 $ErrorActionPreference = 'Stop'
@@ -37,9 +37,14 @@ if ($in.session_id) {
     } catch { }
 }
 
-if ($pc.warm -and $pc.expires_at) {
+# Pair this with "refreshInterval" in the statusLine settings so the countdown keeps moving.
+$left = 0
+if ($pc.expires_at) { $left = [long]$pc.expires_at - $now }
+if ($pc.warm -and $left -gt 0) {
     $until = [DateTimeOffset]::FromUnixTimeSeconds([long]$pc.expires_at).ToLocalTime().ToString('HH:mm')
-    Write-Output ("cache warm until {0} ({1} TTL)" -f $until, $pc.ttl)
+    $mins = [math]::Floor($left / 60)
+    $leftText = if ($mins -ge 1) { "${mins}m left" } else { '<1m left' }
+    Write-Output ("cache {0}, warm until {1} ({2} TTL)" -f $leftText, $until, $pc.ttl)
 } else {
-    Write-Output ("cache cold ({0})" -f $pc.ttl)
+    Write-Output ("cache cold ({0} TTL)" -f $pc.ttl)
 }
