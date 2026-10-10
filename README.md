@@ -51,6 +51,12 @@ Prices come from [LiteLLM's public price list](https://github.com/BerriAI/litell
 - **Auto keep-alive (off by default):** `/cache-clock:auto-keepalive on`. It pings each session 60 seconds before expiry. Each ping re-reads the whole conversation, so it runs on a budget: 1M cached tokens per idle stretch, refilled when you send a message. The status line shows how many pings are left.
 - **Alerts:** desktop notifications at 15, 10 and 5 minutes left (2 and 1 for 5-minute caches), and when the cache expires. macOS uses Notification Center; Linux uses `notify-send`; Windows uses the widget.
 
+### Quiet keep-alive (Claude Code 2.1.287 and later)
+
+The plugin includes a [mod](https://code.claude.com/docs/en/plugins/mods/overview). Where mods run (Claude Code in a terminal, and local sessions in the desktop app's Code tab), keep-alive pings from the widget and auto keep-alive become quiet: the mod re-reads the cached conversation in the background, so nothing is added to your conversation and Claude doesn't wake up. If the mod isn't running, or a quiet ping fails, the plugin falls back to waking Claude.
+
+The mod also shows a band above the prompt in the last 15 minutes (2 on a 5-minute cache), with a live countdown and a **Keep warm** button. Set `band` to `false` to hide it.
+
 ## Windows widget add-on
 
 On Windows and WSL, the plugin also starts a small always-on-top widget with one row per session: green, then amber under 15 min, red under 5 min. Hover a row for details. Right-click for keep-alive, auto keep-alive, check for updates, and more. It also has an estimated timer for the Claude desktop app (Chat and Cowork), which resets when you press Enter there.
@@ -72,6 +78,7 @@ Stored in `config.json` in the data folder: `~/.cache-clock` on macOS and Linux,
 | `color` | `true` | Colours in the status line (also off when `NO_COLOR` is set) |
 | `showCost` | `true` | Show costs in the status line, and fetch current prices daily |
 | `autoExit` | `true` | Windows widget: close when Claude isn't running |
+| `band` | `true` | Mod: show the countdown band above the prompt near expiry |
 
 `/cache-clock:auto-keepalive` with no argument shows the current values. Set `CACHE_CLOCK_NO_AUTOSTART=1` to stop the plugin from starting the Windows widget.
 

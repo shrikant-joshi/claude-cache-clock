@@ -3,6 +3,9 @@
 #   sh cc.sh start|prompt|stop|end     hooks (hook JSON on stdin)
 #   sh cc.sh config [key value]        show or change a setting in config.json
 #   sh cc.sh setup-info                what /cache-clock:setup needs to know
+#   sh cc.sh datadir                   print the data folder
+#   sh cc.sh mod hello <sid> <version>                     called by hooks/mod.tsx (the mod)
+#   sh cc.sh mod forked <sid> ok|fail <read> <write>       a fork ping's result
 # Keeps one state file per session in <data dir>/sessions/<sid>.json, from the API "receipts"
 # (usage fields) Claude Code writes into the session transcript. The status line and the
 # Windows widget read the same files.
@@ -97,7 +100,7 @@ case "${1:-}" in
         printf '%s\n' "config: $f"
         printf '%s\n' "autoKeepAlive=$cfg_autoKeepAlive autoKeepAliveAt=$cfg_autoKeepAliveAt autoKeepAliveBudget=$cfg_autoKeepAliveBudget"
         printf '%s\n' "thresholds=$cfg_thresholds shortThresholds=$cfg_shortThresholds"
-        printf '%s\n' "ctxThresholds=$cfg_ctxThresholds color=$cfg_color showCost=$cfg_showCost"
+        printf '%s\n' "ctxThresholds=$cfg_ctxThresholds color=$cfg_color showCost=$cfg_showCost band=$cfg_band"
         exit 0 ;;
     setup-info)
         sync_statusline
@@ -111,6 +114,43 @@ case "${1:-}" in
             gitbash) printf '%s\n' "widget_install: powershell.exe -NoProfile -ExecutionPolicy Bypass -File \"$(cygpath -w "$CC_ROOT/addons/windows/install.ps1")\"" ;;
             *) printf '%s\n' "widget_install: none (the widget is Windows-only)" ;;
         esac
+        exit 0 ;;
+    datadir)
+        printf '%s\n' "$CC_DIR"
+        exit 0 ;;
+    mod)
+        sub=${2:-}; sid=${3:-}
+        [ -n "$sid" ] || exit 1
+        safe=$(cc_safe_id "$sid")
+        state="$CC_DIR/sessions/$safe.json"
+        now=$(cc_now)
+        cc_set session_id "$(cc_jstr "$sid")"
+        case "$sub" in
+            hello)
+                cc_set mod_version "$(cc_jstr "${4:-}")" ;;
+            forked)
+                rm -f "$CC_DIR/pings/$safe.fork" "$CC_DIR/pings/$safe.ack"
+                eval "$(cc_fields "$(cat "$state" 2>/dev/null)" s 'ttl_s expires_at fork_pings')"
+                if [ "${4:-}" = ok ]; then
+                    # The fork read the main transcript's cache entry, which resets its TTL.
+                    # Confirmed for the 5m TTL (dev/cc-fork-spike); the 1h case is assumed the same.
+                    ttl=$s_ttl_s; case "$ttl" in ''|null|*[!0-9]*) ttl=$(cc_default_ttl) ;; esac
+                    until=$((now + ttl))
+                    case "$s_expires_at" in ''|null|*[!0-9]*) s_expires_at=0 ;; esac
+                    cc_set last_fork_at "$now"
+                    cc_set fork_expires_at "$until"
+                    cc_set fork_pings $(( ${s_fork_pings:-0} + 1 ))
+                    [ "$until" -gt "$s_expires_at" ] && cc_set expires_at "$until"
+                else
+                    cc_set fork_failed_at "$now"
+                fi
+                cc_set last_fork_read "$(cc_jnum "${5:-}")"
+                cc_set last_fork_write "$(cc_jnum "${6:-}")" ;;
+            *) exit 1 ;;
+        esac
+        cc_set updated_at "$now"
+        mkdir -p "$CC_DIR/sessions" 2>/dev/null
+        cc_write "$state"
         exit 0 ;;
 esac
 
@@ -171,7 +211,7 @@ case "$ev" in
         cc_write "$state"
         ;;
     end)
-        rm -f "$state" "$CC_DIR/waiters/$safe.pid" "$CC_DIR/pings/$safe.flag"
+        rm -f "$state" "$CC_DIR/waiters/$safe.pid" "$CC_DIR/pings/$safe.flag" "$CC_DIR/pings/$safe.fork" "$CC_DIR/pings/$safe.ack"
         ;;
 esac
 exit 0

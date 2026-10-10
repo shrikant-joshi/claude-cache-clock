@@ -67,6 +67,19 @@ fi
 ttl_s=3600; [ "$pc_ttl" = 5m ] && ttl_s=300
 case "$pc_expires_at" in ''|null|*[!0-9]*) pc_expires_at='' ;; esac
 
+state=''
+[ -n "$i_session_id" ] && state="$CC_DIR/sessions/$(cc_safe_id "$i_session_id").json"
+# A fork ping from the mod (hooks/mod.tsx) reads the cache outside Claude Code's own requests, so
+# prompt_cache may not count it. Take the later expiry.
+if [ -n "$state" ] && [ -f "$state" ]; then
+    eval "$(cc_fields "$(cat "$state")" st 'fork_expires_at')"
+    case "$st_fork_expires_at" in ''|null|*[!0-9]*) ;; *)
+        if [ "$st_fork_expires_at" -gt "${pc_expires_at:-0}" ] && [ "$st_fork_expires_at" -gt "$now" ]; then
+            pc_expires_at=$st_fork_expires_at; pc_warm=true
+        fi ;;
+    esac
+fi
+
 # What a keep-alive ping (cache read) and a rebuild (cache write at this TTL) cost at API prices.
 # Claude Code reports the exact rebuild size; fall back to the context size.
 rb=${pc_recache_tokens_if_cold:-}
@@ -86,9 +99,7 @@ if [ "$cfg_showCost" != false ] && [ "$rb" -gt 0 ] && [ -n "$mdl_id" ]; then
     fi
 fi
 
-state=''
-if [ -n "$i_session_id" ]; then
-    state="$CC_DIR/sessions/$(cc_safe_id "$i_session_id").json"
+if [ -n "$state" ]; then
     if [ ! -f "$state" ]; then
         cc_set v 1; cc_set source '"claude-code"'; cc_set session_id "$(cc_jstr "$i_session_id")"; cc_set status '"idle"'
     fi

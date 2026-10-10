@@ -93,7 +93,7 @@ cc_basename() { printf '%s' "$1" | sed 's#\\#/#g; s#/*$##; s#.*/##'; }
 cc_load_config() {
     cfg=''
     [ -f "$CC_DIR/config.json" ] && cfg=$(cat "$CC_DIR/config.json")
-    eval "$(cc_fields "$cfg" cfg 'autoKeepAlive autoKeepAliveAt autoKeepAliveBudget thresholds shortThresholds ctxThresholds color showCost')"
+    eval "$(cc_fields "$cfg" cfg 'autoKeepAlive autoKeepAliveAt autoKeepAliveBudget thresholds shortThresholds ctxThresholds color showCost band')"
     [ -n "$cfg_autoKeepAlive" ] || cfg_autoKeepAlive=false
     [ -n "$cfg_autoKeepAliveAt" ] || cfg_autoKeepAliveAt=60
     [ -n "$cfg_autoKeepAliveBudget" ] || cfg_autoKeepAliveBudget=1000000
@@ -102,6 +102,7 @@ cc_load_config() {
     cfg_ctxThresholds=$(printf '%s' "${cfg_ctxThresholds:-25,40,60}" | tr -cd '0-9,' | tr ',' ' ')
     [ -n "$cfg_color" ] || cfg_color=true
     [ -n "$cfg_showCost" ] || cfg_showCost=true
+    [ -n "$cfg_band" ] || cfg_band=true
 }
 
 # ---- Prices ----

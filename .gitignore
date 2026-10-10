@@ -4,3 +4,6 @@
 CLAUDE.md
 PROGRESS.md
 dev/
+# Written by Claude Code when it loads the mod from --plugin-dir
+plugin/.claude-plugin/types/
+plugin/tsconfig.json

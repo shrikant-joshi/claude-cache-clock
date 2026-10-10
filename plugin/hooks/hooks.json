@@ -1,5 +1,6 @@
 {
   "description": "Cache Clock: track the main chat's prompt-cache TTL from the API usage receipts. POSIX sh + awk, on macOS, Linux, WSL and Windows (Git Bash).",
+  "modules": ["./mod.tsx"],
   "hooks": {
     "SessionStart": [
       {

@@ -1,6 +1,6 @@
 {
   "name": "cache-clock",
-  "version": "0.5.1",
+  "version": "0.6.0",
   "description": "Prompt-cache countdown for Claude Code on macOS, Linux and Windows: a status line fed by the server's cache receipts, expiry alerts, and manual or automatic keep-alive pings. Includes an always-on-top widget add-on on Windows.",
   "author": {
     "name": "Shrikant Joshi"

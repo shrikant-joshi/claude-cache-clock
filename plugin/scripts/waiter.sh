@@ -5,6 +5,10 @@
 #   - the widget (or anything else) drops pings/<sid>.flag: a manual keep-alive, or
 #   - auto keep-alive is on and the cache is about to expire, within the token budget.
 # That turn is a real API request, so it reads the cache and resets the TTL.
+# When the Cache Clock mod (hooks/mod.tsx, Claude Code 2.1.287+) runs in the session, it asks the
+# mod first: the mod answers with a fork ping, which reads the cache without a turn. Protocol:
+# write pings/<sid>.fork ("<epoch> <kind>"), the mod copies it to pings/<sid>.ack at once and runs
+# `cc.sh mod forked` when done, which removes both. No ack in 6s, or a recent failed fork: wake.
 # On macOS and Linux it also shows the expiry alerts (on Windows the widget does).
 
 CC_HERE=$(cd "$(dirname "$0")" && pwd)
@@ -18,6 +22,8 @@ eval "$(cc_fields "$input" h 'session_id agent_id')"
 safe=$(cc_safe_id "$h_session_id")
 state="$CC_DIR/sessions/$safe.json"
 ping="$CC_DIR/pings/$safe.flag"
+fork_req="$CC_DIR/pings/$safe.fork"
+fork_ack="$CC_DIR/pings/$safe.ack"
 waiter="$CC_DIR/waiters/$safe.pid"
 
 # Newest listener wins. An older one sees a different PID in the file and quits.
@@ -30,12 +36,41 @@ echo $$ > "$waiter"
 sp=''
 on_signal() {
     [ -n "$sp" ] && kill "$sp" 2>/dev/null
-    if [ "$(cat "$waiter" 2>/dev/null)" = "$$" ]; then rm -f "$state" "$ping" "$waiter"; fi
+    if [ "$(cat "$waiter" 2>/dev/null)" = "$$" ]; then rm -f "$state" "$ping" "$waiter" "$fork_req" "$fork_ack"; fi
     exit 0
 }
 trap on_signal HUP INT TERM
 started=$(cc_now)
 fired=' '
+fork_since=''
+
+nap() {
+    sleep "$1" </dev/null >/dev/null 2>&1 &
+    sp=$!
+    wait "$sp"
+    sp=''
+}
+
+# Ask the mod for a fork ping. Returns 0 when the mod took the request.
+try_fork() {
+    [ -n "$s_mod_version" ] || return 1
+    case "$s_fork_failed_at" in ''|null|*[!0-9]*) ;; *) [ $((now - s_fork_failed_at)) -lt 600 ] && return 1 ;; esac
+    req="$now $1"
+    printf '%s\n' "$req" > "$fork_req"
+    i=0
+    while [ $i -lt 6 ]; do
+        nap 1
+        # Acked, or already done (`cc.sh mod forked` removed the request).
+        if [ ! -f "$fork_req" ] || [ "$(cat "$fork_ack" 2>/dev/null)" = "$req" ]; then
+            fork_since=$now
+            started=$now
+            return 0
+        fi
+        i=$((i + 1))
+    done
+    rm -f "$fork_req"
+    return 1
+}
 
 wake() {
     rm -f "$waiter"
@@ -44,17 +79,24 @@ wake() {
 }
 
 while :; do
-    sleep 2 </dev/null >/dev/null 2>&1 &
-    sp=$!
-    wait "$sp"
-    sp=''
+    nap 2
     now=$(cc_now)
     owner=$(cat "$waiter" 2>/dev/null) || exit 0
     [ "$owner" = "$$" ] || exit 0
     [ $((now - started)) -gt 7200 ] && exit 0
     [ -f "$state" ] || continue   # the Stop hook may still be writing it
-    eval "$(cc_fields "$(cat "$state")" s 'status expires_at ttl_s cache_read cache_write context_tokens auto_spent auto_pings project')"
+    # A fork the mod is still running: wait for its result (at most 2 min).
+    if [ -n "$fork_since" ]; then
+        if [ -f "$fork_req" ] && [ $((now - fork_since)) -lt 120 ]; then continue; fi
+        rm -f "$fork_req" "$fork_ack"
+        fork_since=''
+    fi
+    eval "$(cc_fields "$(cat "$state")" s 'status expires_at ttl_s cache_read cache_write context_tokens auto_spent auto_pings project mod_version fork_failed_at fork_expires_at')"
     case "$s_expires_at" in ''|null|*[!0-9]*) s_expires_at='' ;; esac
+    # The status line writes Claude Code's own expiry, which may not count fork pings.
+    case "$s_fork_expires_at" in ''|null|*[!0-9]*) ;; *)
+        [ "$s_fork_expires_at" -gt "${s_expires_at:-0}" ] && s_expires_at=$s_fork_expires_at ;;
+    esac
     cc_load_config
 
     if [ -n "$s_expires_at" ]; then
@@ -72,6 +114,7 @@ while :; do
             cc_set auto_spent $(( ${s_auto_spent:-0} + ctx ))
             cc_set last_auto_ping_at "$now"
             cc_write "$state"
+            try_fork auto && continue
             wake 'Automatic keep-alive ping to keep the prompt cache warm.'
         fi
 
@@ -100,6 +143,7 @@ while :; do
         rm -f "$ping"
         # Claude is mid-turn: the cache is being refreshed anyway, so skip the ping.
         [ "$s_status" = working ] && continue
+        try_fork manual && continue
         wake 'The user asked for a keep-alive ping to keep the prompt cache warm.'
     fi
 done
