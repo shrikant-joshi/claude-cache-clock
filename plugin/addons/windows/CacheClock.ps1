@@ -433,6 +433,13 @@ function Update-Lanes {
             title = $(if ($isCodex) { "Codex: $proj" } else { "Code: $proj" }); badge = $ttlLabel
             ttl = $ttl; expires = $exp; status = $status; tip = ''
             auto = ([bool]$script:Cfg.autoKeepAlive -and $autoLeft -ne 0)
+            link = $null; app = ''
+        }
+        # Sessions in a desktop app (cc.sh client=app) open there on a click. Terminal sessions have no link.
+        if ($st.client -eq 'app') {
+            # Codex: the thread id is the session id. Claude: the app's own id (local_...), from cc.sh.
+            if ($isCodex) { $lane.link = "codex://threads/$([uri]::EscapeDataString($sid))"; $lane.app = 'ChatGPT' }
+            elseif ($st.app_session) { $lane.link = "claude://code/continue?session=$([uri]::EscapeDataString([string]$st.app_session))"; $lane.app = 'Claude' }
         }
         if ($lane.auto) { $lane.badge = "$ttlLabel auto" }
         if ($isCodex) {
@@ -470,6 +477,7 @@ function Update-Lanes {
             } else {
                 $lines += 'Auto keep-alive: off (right-click to turn on).'
             }
+            if ($lane.link) { $lines += "Click: open this chat in the $($lane.app) app." }
             $lines += 'Right-click: keep alive (a hidden fork of this session, nothing added to the chat; uses a little of your plan).'
             $lane.tip = $lines -join "`n"
             [void]$lanes.Add($lane)
@@ -498,6 +506,7 @@ function Update-Lanes {
         } else {
             $lines += 'Auto keep-alive: off (right-click to turn on).'
         }
+        if ($lane.link) { $lines += "Click: open this chat in the $($lane.app) app." }
         $lines += 'Right-click: keep alive (sends a tiny turn, uses a little of your plan).'
         $lane.tip = $lines -join "`n"
         [void]$lanes.Add($lane)
@@ -631,6 +640,10 @@ $form.Add_Paint({
     $pen = New-Object System.Drawing.Pen($C.Border); $g.DrawRectangle($pen, 0, 0, $w - 1, $form.ClientSize.Height - 1); $pen.Dispose()
 })
 
+function Open-Chat($lane) {
+    try { Start-Process $lane.link } catch { Show-Alert 'Cache Clock' "Could not open the $($lane.app) app: $($_.Exception.Message)" 'Info' }
+}
+
 function Get-RowAt([int]$y) {
     $i = [math]::Floor(($y - $script:Pad) / $script:RowH)
     if ($i -ge 0 -and $i -lt $script:Lanes.Count) { return [int]$i }
@@ -666,6 +679,10 @@ $form.Add_MouseUp({
         $script:DragFrom = $null
         if ($form.Left -ne [int]$script:Cfg.x -or $form.Top -ne [int]$script:Cfg.y) {
             $script:Cfg.x = $form.Left; $script:Cfg.y = $form.Top; Save-Config
+        } else {
+            # Not moved since the last saved position: a click. On an app session's row it opens that chat.
+            $row = Get-RowAt $e.Y
+            if ($row -ge 0 -and $script:Lanes[$row].link) { Open-Chat $script:Lanes[$row] }
         }
     } elseif ($e.Button -eq [System.Windows.Forms.MouseButtons]::Right) {
         $menu = New-RowMenu (Get-RowAt $e.Y)
@@ -705,6 +722,10 @@ function New-RowMenu([int]$row) {
         $pingText = $(if ($lane.codex) { 'Keep alive now (hidden fork)' } else { 'Keep alive now (sends a tiny turn)' })
         $ping = Add-MenuItem $menu $pingText { Request-KeepAlive $this.Tag } $false $canPing
         $ping.Tag = $sid
+        if ($lane.link) {
+            $open = Add-MenuItem $menu "Open in the $($lane.app) app" { Open-Chat $this.Tag }
+            $open.Tag = $lane
+        }
         $hide = Add-MenuItem $menu 'Hide this session' { $script:Hidden[$this.Tag] = $true; Update-Lanes; $form.Invalidate() }
         $hide.Tag = $sid
         [void]$menu.Items.Add((New-Object System.Windows.Forms.ToolStripSeparator))

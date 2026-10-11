@@ -243,6 +243,16 @@ eval "$(cc_fields "$old" s 'ttl_s turn_started_at last_auto_ping_at')"
 cc_set v 1
 cc_set source "$(cc_jstr "$host")"
 cc_set session_id "$(cc_jstr "$sid")"
+# app = the Claude desktop app or the Codex (ChatGPT) desktop app: the widget can open the chat there.
+client=terminal
+case "$host:${CLAUDE_CODE_ENTRYPOINT:-}:${CODEX_INTERNAL_ORIGINATOR_OVERRIDE:-}" in
+    claude-code:claude-desktop:*|codex:*:*Desktop*) client=app ;;
+esac
+cc_set client "\"$client\""
+# The Claude app opens its sessions by its own id (claude://code/continue?session=local_...), not the CLI's.
+if [ "$client:$host" = app:claude-code ]; then
+    case "${CLAUDE_CODE_HOST_SESSION_ID:-}" in local_*[!A-Za-z0-9_-]*|'') ;; local_*) cc_set app_session "\"$CLAUDE_CODE_HOST_SESSION_ID\"" ;; esac
+fi
 if [ -n "$h_cwd" ]; then
     cc_set cwd "$(cc_jstr "$h_cwd")"
     cc_set project "$(cc_jstr "$(cc_basename "$h_cwd")")"

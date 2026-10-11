@@ -4,29 +4,29 @@
     "SessionStart": [
       {
         "hooks": [
-          { "type": "command", "command": "sh \"${CLAUDE_PLUGIN_ROOT}/scripts/cc.sh\" start codex", "timeout": 15 }
+          { "type": "command", "command": "sh \"${CLAUDE_PLUGIN_ROOT}/scripts/cc.sh\" start codex", "timeout": 15, "statusMessage": "Cache Clock: start the cache timer" }
         ]
       }
     ],
     "UserPromptSubmit": [
       {
         "hooks": [
-          { "type": "command", "command": "sh \"${CLAUDE_PLUGIN_ROOT}/scripts/cc.sh\" prompt codex", "timeout": 10, "async": true }
+          { "type": "command", "command": "sh \"${CLAUDE_PLUGIN_ROOT}/scripts/cc.sh\" prompt codex", "timeout": 10, "async": true, "statusMessage": "Cache Clock: mark the session busy" }
         ]
       }
     ],
     "Stop": [
       {
         "hooks": [
-          { "type": "command", "command": "sh \"${CLAUDE_PLUGIN_ROOT}/scripts/cc.sh\" stop codex", "timeout": 15 },
-          { "type": "command", "command": "sh \"${CLAUDE_PLUGIN_ROOT}/scripts/waiter.sh\" codex", "async": true, "timeout": 7500 }
+          { "type": "command", "command": "sh \"${CLAUDE_PLUGIN_ROOT}/scripts/cc.sh\" stop codex", "timeout": 15, "statusMessage": "Cache Clock: update the cache timer" },
+          { "type": "command", "command": "sh \"${CLAUDE_PLUGIN_ROOT}/scripts/waiter.sh\" codex", "async": true, "timeout": 7500, "statusMessage": "Cache Clock: keep-alive and expiry alerts (background)" }
         ]
       }
     ],
     "SessionEnd": [
       {
         "hooks": [
-          { "type": "command", "command": "sh \"${CLAUDE_PLUGIN_ROOT}/scripts/cc.sh\" end codex", "timeout": 3 }
+          { "type": "command", "command": "sh \"${CLAUDE_PLUGIN_ROOT}/scripts/cc.sh\" end codex", "timeout": 3, "statusMessage": "Cache Clock: clear the session timer" }
         ]
       }
     ]

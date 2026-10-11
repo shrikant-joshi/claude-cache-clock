@@ -102,7 +102,7 @@ codex_fork() {  # auto|manual
         dir=''; [ -n "$h_cwd" ] && [ -d "$h_cwd" ] && dir=$h_cwd
         (
             [ -n "$dir" ] && cd "$dir"
-            CACHE_CLOCK_IN_FORK=1 exec ${CACHE_CLOCK_CODEX:-codex} exec --ephemeral --skip-git-repo-check --json \
+            CACHE_CLOCK_IN_FORK=1 exec "${CACHE_CLOCK_CODEX:-${CODEX_CLI_PATH:-codex}}" exec --ephemeral --skip-git-repo-check --json \
                 -m "$1" -s "$3" -c "approval_policy=\"$2\"" $net $eff fork "$h_session_id" "$CODEX_PING"
         ) </dev/null >"$fork_out" 2>&1 &
         fp=$!; i=0
