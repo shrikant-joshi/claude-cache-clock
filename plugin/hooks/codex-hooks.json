@@ -1,0 +1,34 @@
+{
+  "description": "Cache Clock for Codex (read through .codex-plugin/plugin.json; Claude Code uses hooks.json). No modules or asyncRewake: Codex rejects modules and runs asyncRewake hooks in the foreground.",
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          { "type": "command", "command": "sh \"${CLAUDE_PLUGIN_ROOT}/scripts/cc.sh\" start codex", "timeout": 15 }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          { "type": "command", "command": "sh \"${CLAUDE_PLUGIN_ROOT}/scripts/cc.sh\" prompt codex", "timeout": 10, "async": true }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          { "type": "command", "command": "sh \"${CLAUDE_PLUGIN_ROOT}/scripts/cc.sh\" stop codex", "timeout": 15 },
+          { "type": "command", "command": "sh \"${CLAUDE_PLUGIN_ROOT}/scripts/waiter.sh\" codex", "async": true, "timeout": 7500 }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          { "type": "command", "command": "sh \"${CLAUDE_PLUGIN_ROOT}/scripts/cc.sh\" end codex", "timeout": 3 }
+        ]
+      }
+    ]
+  }
+}

@@ -1,14 +1,14 @@
 #!/bin/sh
 # Cache Clock: Claude Code hook handler. POSIX sh + awk: macOS, Linux, WSL, Windows (Git Bash).
-#   sh cc.sh start|prompt|stop|end     hooks (hook JSON on stdin)
+#   sh cc.sh start|prompt|stop|end [codex]   hooks (hook JSON on stdin); codex: from hooks/codex-hooks.json
 #   sh cc.sh config [key value]        show or change a setting in config.json
 #   sh cc.sh setup-info                what /cache-clock:setup needs to know
 #   sh cc.sh datadir                   print the data folder
 #   sh cc.sh mod hello <sid> <version>                     called by hooks/mod.tsx (the mod)
 #   sh cc.sh mod forked <sid> ok|fail <read> <write>       a fork ping's result
 # Keeps one state file per session in <data dir>/sessions/<sid>.json, from the API "receipts"
-# (usage fields) Claude Code writes into the session transcript. The status line and the
-# Windows widget read the same files.
+# (usage fields) Claude Code writes into the session transcript, or Codex into its rollout file.
+# The status line (Claude Code only) and the Windows widget read the same files.
 
 CC_HERE=$(cd "$(dirname "$0")" && pwd)
 . "$CC_HERE/lib.sh"
@@ -87,6 +87,70 @@ update_from_transcript() {  # transcript, turn_started_at, state ttl
     cc_set basis '"transcript"'
 }
 
+# Codex: its rollout's last token_count. input_tokens includes the cached part, and Codex
+# reports no cache writes (cache_write_input_tokens reads 0), so writes = input - cached.
+# OpenAI caches every prompt over 1024 tokens with no opt-in, so any response starts a TTL.
+CODEX_TTL=1800   # docs: at least 30 min; spike: warm at 35m41s, cold at 60m20s
+update_from_rollout() {  # rollout, turn_started_at
+    tp=$1; turn=${2:-0}
+    [ -n "$tp" ] || return 1
+    i=0; u=''; tries=8
+    [ "$turn" -gt 0 ] || tries=1
+    while [ $i -lt $tries ]; do
+        [ -f "$tp" ] && u=$(tail -c 1048576 "$tp" 2>/dev/null | awk -f "$CC_AWK" -v mode=codex)
+        if [ -n "$u" ]; then
+            set -- $u
+            [ "$1" -ge "$turn" ] && break
+        fi
+        sleep 0.4 2>/dev/null || sleep 1
+        i=$((i + 1))
+    done
+    [ -n "$u" ] || return 1
+    set -- $u
+    ts=$1; inp=$2; rd=$3
+    wr=$((inp - rd)); [ "$wr" -ge 0 ] || wr=0
+    last=$ts
+    [ "$turn" -gt 0 ] && [ "$last" -lt "$turn" ] && last=$(cc_now)
+    rebuilt=false; [ "$wr" -gt "$rd" ] && rebuilt=true
+    cc_set ttl_s "$CODEX_TTL"
+    cc_set last_response_at "$last"
+    cc_set cache_read "$rd"
+    cc_set cache_write "$wr"
+    cc_set context_tokens "$inp"
+    [ "$4" != - ] && cc_set context_max "$4"
+    cc_set quota_pct "$(cc_jnum "${5%.*}")"
+    cc_set quota_resets_at "$(cc_jnum "$6")"
+    cc_set quota_window_min "$(cc_jnum "$7")"
+    if [ "$inp" -gt 0 ]; then
+        cc_set caching_observed true
+        cc_set expires_at $((last + CODEX_TTL))
+    else
+        cc_set caching_observed false
+        cc_set expires_at null
+    fi
+    cc_set rebuilt "$rebuilt"
+    cc_set basis '"transcript"'
+}
+
+# Codex fires no SessionEnd when the TUI exits, so its session files would stay forever.
+# Remove Codex sessions that have been cold for an hour, or never got a receipt in 2 hours.
+# Not this one: a resumed session starts with an old receipt.
+sweep_codex() {
+    for f in "$CC_DIR"/sessions/*.json; do
+        [ -f "$f" ] && [ "$f" != "$state" ] || continue
+        j=$(cat "$f" 2>/dev/null)
+        case "$j" in *'"source":"codex"'*) ;; *) continue ;; esac
+        eval "$(cc_fields "$j" w 'expires_at updated_at')"
+        case "$w_expires_at" in ''|null|*[!0-9]*) w_expires_at='' ;; esac
+        case "$w_updated_at" in ''|null|*[!0-9]*) w_updated_at=0 ;; esac
+        if { [ -n "$w_expires_at" ] && [ $((now - w_expires_at)) -gt 3600 ]; } ||
+           { [ -z "$w_expires_at" ] && [ $((now - w_updated_at)) -gt 7200 ]; }; then
+            b=$(basename "$f" .json)
+            rm -f "$f" "$CC_DIR/waiters/$b.pid" "$CC_DIR/pings/$b.flag"
+        fi
+    done
+}
+
 case "${1:-}" in
     config)
         shift
@@ -155,10 +219,14 @@ case "${1:-}" in
 esac
 
 ev=${1:-}
+host=${2:-claude-code}
 input=$(cat)
-eval "$(cc_fields "$input" h 'session_id agent_id transcript_path cwd')"
+eval "$(cc_fields "$input" h 'session_id agent_id transcript_path cwd model')"
 [ -n "$h_session_id" ] || exit 0
 [ -n "$h_agent_id" ] && exit 0   # Subagents have their own 5-min cache. Track the main chat only.
+[ "$h_transcript_path" = null ] && h_transcript_path=''
+# Codex: `codex exec --ephemeral` has no rollout (and nothing to track): our own fork pings, for one.
+[ "$host" = codex ] && [ -z "$h_transcript_path" ] && [ "$ev" != end ] && exit 0
 
 sid=$h_session_id
 safe=$(cc_safe_id "$sid")
@@ -172,23 +240,33 @@ old=''
 eval "$(cc_fields "$old" s 'ttl_s turn_started_at last_auto_ping_at')"
 
 cc_set v 1
-cc_set source '"claude-code"'
+cc_set source "$(cc_jstr "$host")"
 cc_set session_id "$(cc_jstr "$sid")"
 if [ -n "$h_cwd" ]; then
     cc_set cwd "$(cc_jstr "$h_cwd")"
     cc_set project "$(cc_jstr "$(cc_basename "$h_cwd")")"
 fi
 cc_set updated_at "$now"
+# Claude Code's model comes from the status line. Codex has none, but puts the model in the hook input.
+[ "$host" = codex ] && [ -n "$h_model" ] && cc_set model "$(cc_jstr "$h_model")"
+
+# One reader per host: Claude Code transcript or Codex rollout.
+update_receipt() {  # turn_started_at
+    if [ "$host" = codex ]; then update_from_rollout "$transcript" "$1"; else update_from_transcript "$transcript" "$1" "$s_ttl_s"; fi
+}
 
 case "$ev" in
     start)
         cc_set status '"idle"'
-        update_from_transcript "$transcript" 0 "$s_ttl_s"
+        update_receipt 0
         cc_write "$state"
         write_host_info
-        sync_statusline
-        cc_load_config
-        [ "$cfg_showCost" = false ] || (cc_refresh_prices </dev/null >/dev/null 2>&1 &)
+        sweep_codex
+        if [ "$host" != codex ]; then   # status line and $ prices are Claude Code only
+            sync_statusline
+            cc_load_config
+            [ "$cfg_showCost" = false ] || (cc_refresh_prices </dev/null >/dev/null 2>&1 &)
+        fi
         launch_widget
         ;;
     prompt)
@@ -207,7 +285,7 @@ case "$ev" in
         ;;
     stop)
         cc_set status '"idle"'
-        update_from_transcript "$transcript" "${s_turn_started_at:-0}" "$s_ttl_s"
+        update_receipt "${s_turn_started_at:-0}"
         cc_write "$state"
         ;;
     end)

@@ -10,10 +10,14 @@
 # write pings/<sid>.fork ("<epoch> <kind>"), the mod copies it to pings/<sid>.ack at once and runs
 # `cc.sh mod forked` when done, which removes both. No ack in 6s, or a recent failed fork: wake.
 # On macOS and Linux it also shows the expiry alerts (on Windows the widget does).
+# `waiter.sh codex` (hooks/codex-hooks.json, an async Stop hook): Codex has no asyncRewake. It runs
+# such a hook in the foreground, and exit 2 there blocks the Stop and continues the turn, in an
+# endless loop. So on Codex the listener never exits 2 and never wakes: alerts only, for now.
 
 CC_HERE=$(cd "$(dirname "$0")" && pwd)
 . "$CC_HERE/lib.sh"
 
+host=${1:-claude-code}
 input=$(cat)
 eval "$(cc_fields "$input" h 'session_id agent_id')"
 [ -n "$h_session_id" ] || exit 0
@@ -73,6 +77,7 @@ try_fork() {
 }
 
 wake() {
+    [ "$host" = codex ] && return 0
     rm -f "$waiter"
     echo "[cache-clock] $1 Reply with exactly: ok. Do not call any tools and do not add anything else." >&2
     exit 2
@@ -106,7 +111,7 @@ while :; do
         auto_left=0
         ctx=$(( ${s_cache_read:-0} + ${s_cache_write:-0} ))
         [ "$ctx" -gt 0 ] || ctx=${s_context_tokens:-0}   # no receipt yet: the status line's context size
-        [ "$cfg_autoKeepAlive" = true ] && auto_left=$(cc_auto_left "$ctx" 0 "${s_auto_spent:-0}" "$cfg_autoKeepAliveBudget")
+        [ "$cfg_autoKeepAlive" = true ] && [ "$host" != codex ] && auto_left=$(cc_auto_left "$ctx" 0 "${s_auto_spent:-0}" "$cfg_autoKeepAliveBudget")
 
         # Auto keep-alive: ping shortly before expiry, while the budget allows.
         if [ "$s_status" != working ] && [ $left -gt 5 ] && [ $left -le "$cfg_autoKeepAliveAt" ] && [ "$auto_left" -gt 0 ]; then
@@ -120,7 +125,9 @@ while :; do
 
         # Alerts (macOS and Linux). Skipped while auto keep-alive has this session covered.
         if [ "$s_status" != working ] && { [ "$CC_PLATFORM" = mac ] || [ "$CC_PLATFORM" = linux ]; }; then
-            title="Cache Clock: ${s_project:-Claude Code}"
+            app='Claude Code'; hint=' Type /cache-clock:keepalive to keep it warm.'
+            [ "$host" = codex ] && { app=Codex; hint=''; }
+            title="Cache Clock: ${s_project:-$app}"
             if [ $left -le 0 ]; then
                 case "$fired" in *' cold '*) ;; *)
                     fired="$fired cold "
@@ -134,13 +141,14 @@ while :; do
                         case "$fired" in *" $t "*) ;; *) fired="$fired $t "; crossed=1 ;; esac
                     fi
                 done
-                [ -n "$crossed" ] && cc_notify "$title" "About $(( (left + 59) / 60 )) min left. Type /cache-clock:keepalive to keep it warm."
+                [ -n "$crossed" ] && cc_notify "$title" "About $(( (left + 59) / 60 )) min left.$hint"
             fi
         fi
     fi
 
     if [ -f "$ping" ]; then
         rm -f "$ping"
+        [ "$host" = codex ] && continue   # no keep-alive on Codex yet
         # Claude is mid-turn: the cache is being refreshed anyway, so skip the ping.
         [ "$s_status" = working ] && continue
         try_fork manual && continue

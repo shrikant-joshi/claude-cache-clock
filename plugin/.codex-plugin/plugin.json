@@ -1,0 +1,11 @@
+{
+  "name": "cache-clock",
+  "version": "0.6.0",
+  "description": "Prompt-cache countdown for Codex: tracks the cache TTL from the rollout's token receipts, with expiry alerts on macOS and Linux and an always-on-top widget add-on on Windows.",
+  "author": {
+    "name": "Shrikant Joshi"
+  },
+  "license": "BSD-3-Clause",
+  "hooks": "./hooks/codex-hooks.json",
+  "skills": "./codex-skills"
+}

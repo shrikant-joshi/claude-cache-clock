@@ -420,17 +420,23 @@ function Update-Lanes {
         $autoLeft = -1
         if ([bool]$script:Cfg.autoKeepAlive) { $autoLeft = Get-AutoPingsLeft $st }
 
+        # Codex sessions (source codex): same file, no keep-alive yet, plan quota instead of $ costs.
+        $isCodex = ($st.source -eq 'codex')
         $ttl = [int]$st.ttl_s; if (-not $ttl) { $ttl = 3600 }
-        $ttlLabel = $(if ($ttl -le 300) { '5m' } else { '1h' })
+        $ttlLabel = $(if ($ttl -le 300) { '5m' } elseif ($ttl -lt 3600) { "$([math]::Round($ttl / 60))m" } else { '1h' })
         $proj = [string]$st.project; if (-not $proj) { $proj = $sid.Substring(0, [math]::Min(8, $sid.Length)) }
         $lane = [pscustomobject]@{
-            key = "cc:$sid"; kind = 'cc'; sid = $sid
-            title = "Code: $proj"; badge = $ttlLabel
+            key = "cc:$sid"; kind = 'cc'; sid = $sid; codex = $isCodex
+            title = $(if ($isCodex) { "Codex: $proj" } else { "Code: $proj" }); badge = $ttlLabel
             ttl = $ttl; expires = $exp; status = $status; tip = ''
-            auto = ([bool]$script:Cfg.autoKeepAlive -and $autoLeft -ne 0)
+            auto = (-not $isCodex -and [bool]$script:Cfg.autoKeepAlive -and $autoLeft -ne 0)
         }
         if ($lane.auto) { $lane.badge = "$ttlLabel auto" }
-        $lines = @("Claude Code: $($st.cwd)", "TTL $ttlLabel, from the server's usage receipts ($($st.basis)).")
+        if ($isCodex) {
+            $lines = @("Codex: $($st.cwd)", "TTL $ttlLabel (OpenAI: at least 30 min, so an estimate), from the rollout's usage receipts.")
+        } else {
+            $lines = @("Claude Code: $($st.cwd)", "TTL $ttlLabel, from the server's usage receipts ($($st.basis)).")
+        }
         if ($st.last_response_at) {
             $rb = $(if ($st.rebuilt) { '  (this turn rebuilt the cache)' } else { '' })
             $lines += "Last response $(Format-Clock ([long]$st.last_response_at)): read $(Format-K $st.cache_read), wrote $(Format-K $st.cache_write)$rb"
@@ -440,6 +446,19 @@ function Update-Lanes {
             $cl = "Context: $(Format-K $st.context_tokens)"
             if ([long]$st.context_max -gt 0) { $cl += " of $(Format-K $st.context_max) ($([math]::Round(100.0 * [long]$st.context_tokens / [long]$st.context_max))%)" }
             $lines += $cl
+        }
+        if ($isCodex) {
+            if ($null -ne $st.quota_pct) {
+                $ql = "Plan usage: $($st.quota_pct)%"
+                $wm = [long]$st.quota_window_min
+                if ($wm -ge 1440) { $ql += " of the $([math]::Round($wm / 1440))-day limit" } elseif ($wm -gt 0) { $ql += " of the $([math]::Round($wm / 60))-hour limit" }
+                if ([long]$st.quota_resets_at -gt 0) { $ql += ", resets $([DateTimeOffset]::FromUnixTimeSeconds([long]$st.quota_resets_at).ToLocalTime().ToString('d MMM HH:mm'))" }
+                $lines += $ql
+            }
+            $lines += 'Keep-alive: not available for Codex yet. Send a message in Codex to keep the cache warm.'
+            $lane.tip = $lines -join "`n"
+            [void]$lanes.Add($lane)
+            continue
         }
         # Costs come from the status line (API prices for this model); absent without it.
         $rbTok = [long]$st.rebuild_tokens
@@ -510,6 +529,8 @@ function Test-Alerts {
             $mins = [math]::Ceiling($r / 60)
             if ($lane.kind -eq 'manual') {
                 $msg = "About $mins min left on the cache. Send any message in that chat to keep it warm."
+            } elseif ($lane.codex) {
+                $msg = "About $mins min left. Send a message in Codex to keep it warm."
             } else {
                 $msg = "About $mins min left. Right-click the widget and choose Keep alive, or type /cache-clock:keepalive."
             }
@@ -650,8 +671,9 @@ function New-RowMenu([int]$row) {
         [void]$menu.Items.Add((New-Object System.Windows.Forms.ToolStripSeparator))
     } elseif ($lane -and $lane.kind -eq 'cc') {
         $sid = $lane.sid
-        $canPing = ($lane.status -eq 'timer' -and $lane.expires -gt (Get-Epoch))
-        $ping = Add-MenuItem $menu 'Keep alive now (sends a tiny turn)' { Request-KeepAlive $this.Tag } $false $canPing
+        $canPing = (-not $lane.codex -and $lane.status -eq 'timer' -and $lane.expires -gt (Get-Epoch))
+        $pingText = $(if ($lane.codex) { 'Keep alive now (not on Codex yet)' } else { 'Keep alive now (sends a tiny turn)' })
+        $ping = Add-MenuItem $menu $pingText { Request-KeepAlive $this.Tag } $false $canPing
         $ping.Tag = $sid
         $hide = Add-MenuItem $menu 'Hide this session' { $script:Hidden[$this.Tag] = $true; Update-Lanes; $form.Invalidate() }
         $hide.Tag = $sid

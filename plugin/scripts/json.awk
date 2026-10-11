@@ -7,6 +7,8 @@
 #                              JSON object read from the input, print the result compactly
 #   usage                      read transcript JSONL, print "ts input read write ttl" for the last
 #                              main-chat API response with cache receipts
+#   codex                      read a Codex rollout JSONL, print "ts input cached ctx_max quota_pct
+#                              quota_resets_at quota_window_min" for the last token_count (- if unknown)
 #   prices                     read LiteLLM's model_prices_and_context_window.json, print one line per
 #                              Anthropic claude-* model: "model input write5m write1h read" in $/MTok
 # Keys are looked up with a regex on the raw text, like the transcript parsing: an unescaped
@@ -111,6 +113,28 @@ mode == "usage" {
     next
 }
 
+# Codex: event_msg/token_count, info.last_token_usage {input_tokens (includes cached), cached_input_tokens},
+# info.model_context_window, rate_limits.primary {used_percent, window_minutes, resets_at}.
+# total_token_usage comes first on the line and has the same keys, so cut the line at last_token_usage.
+function fnum(line, key) {
+    if (match(line, "\"" key "\":[0-9.]+")) return substr(line, RSTART + length(key) + 3, RLENGTH - length(key) - 3)
+    return "-"
+}
+mode == "codex" {
+    if (index($0, "\"type\":\"token_count\"") == 0) next
+    p = index($0, "\"last_token_usage\":")
+    if (p == 0) next
+    s = substr($0, p)
+    x_ts = ""
+    if (match($0, "\"timestamp\":\"[^\"]*\"")) x_ts = substr($0, RSTART + 13, RLENGTH - 14)
+    x_in = num(s, "input_tokens"); x_rd = num(s, "cached_input_tokens"); x_max = fnum($0, "model_context_window")
+    x_pct = "-"; x_reset = "-"; x_win = "-"
+    p = index($0, "\"primary\":{")
+    if (p) { s = substr($0, p); x_pct = fnum(s, "used_percent"); x_reset = fnum(s, "resets_at"); x_win = fnum(s, "window_minutes") }
+    x_found = 1
+    next
+}
+
 # One model per top-level key. Nested objects are skipped by tracking brace depth.
 function p_mt(v) { return v == "" ? "-" : sprintf("%.6g", v * 1000000) }
 function p_emit() {
@@ -140,6 +164,10 @@ mode != "usage" { buf = buf $0 "\n" }
 END {
     if (mode == "usage") {
         if (u_found) print iso_epoch(u_ts), u_in, u_rd, u_wr, (u_ttl ? u_ttl : 0)
+        exit
+    }
+    if (mode == "codex") {
+        if (x_found) print iso_epoch(x_ts), x_in, x_rd, x_max, x_pct, x_reset, x_win
         exit
     }
     if (mode == "get") { v = get_val(buf, key); if (v != "") print v; exit }
