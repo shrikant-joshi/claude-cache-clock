@@ -1,6 +1,6 @@
 # Cache Clock
 
-A Claude Code plugin that shows how long your prompt cache stays warm, what it would cost to lose it, and can keep it alive. Works with the Claude Code CLI on macOS, Linux and Windows (native or WSL).
+A Claude Code plugin that shows how long your prompt cache stays warm, what it would cost to lose it, and can keep it alive. Works with the Claude Code CLI on macOS, Linux and Windows (native or WSL), and with Codex (CLI and the ChatGPT desktop app, see [Codex](#codex)).
 
 Claude Code caches your conversation for 1 hour (5 minutes on an API key). Once the cache expires, the next message rebuilds it: slower, and it uses more of your plan. Cache Clock reads the cache receipts Claude Code records after every response and turns them into an exact countdown.
 
@@ -59,9 +59,30 @@ The mod also shows a band above the prompt in the last 15 minutes (2 on a 5-minu
 
 ## Windows widget add-on
 
-On Windows and WSL, the plugin also starts a small always-on-top widget with one row per session: green, then amber under 15 min, red under 5 min. Hover a row for details. Right-click for keep-alive, auto keep-alive, check for updates, and more. It also has an estimated timer for the Claude desktop app (Chat and Cowork), which resets when you press Enter there.
+On Windows and WSL, the plugin also starts a small always-on-top widget with one row per session: green, then amber under 15 min, red under 5 min. Hover a row for details. Click a row of a desktop app session (Claude app Code tab, or Codex in the ChatGPT app) to open that chat in its app. Right-click for keep-alive, auto keep-alive, check for updates, and more. It also has an estimated timer for the Claude desktop app (Chat and Cowork), which resets when you press Enter there.
 
 `/cache-clock:setup` can also add the widget to the Start menu and Startup.
+
+## Codex
+
+The same plugin works in Codex: the Codex CLI and Codex in the ChatGPT desktop app. Install it with the Codex CLI on the same system as the app (on Windows, the Windows Codex CLI, not one in WSL):
+
+```
+codex plugin marketplace add shrikant-joshi/claude-cache-clock
+codex plugin add cache-clock@cache-clock
+```
+
+Codex runs plugin hooks only after you trust them: start Codex, open `/hooks`, and trust the five Cache Clock hooks (the desktop app asks when you open it). Codex asks again after updates that change them. To update: `codex plugin marketplace upgrade cache-clock`.
+
+What's different from Claude Code:
+
+- **TTL:** OpenAI keeps the cache for at least 30 minutes, so the countdown assumes 30. In tests it lasted 35 to 60 minutes.
+- **No status line:** Codex has no custom status line. The countdown is in the Windows widget, and macOS and Linux get the alerts.
+- **Quiet keep-alive:** a ping runs a hidden fork of the session (`codex exec --ephemeral fork`). It reads the cached conversation, adds nothing to it, and uses a little of your plan (the conversation plus about 20k tokens). Auto keep-alive pings 5 minutes before expiry. Turn it on from the widget menu or ask Codex to turn on Cache Clock auto keep-alive.
+- **Plan usage:** the widget shows your Codex plan usage instead of dollar costs.
+- **Windows:** the hooks need Git for Windows (`sh` on the PATH).
+
+The plugin has not been tested with the Codex desktop app on macOS yet.
 
 ## Settings
 
