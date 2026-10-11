@@ -155,6 +155,7 @@ $script:Lanes = @()
 $script:Fired = @{}          # "<lane>|<expiry>" -> hashtable of alerts already shown
 $script:Hidden = @{}         # session ids the user hid
 $script:Pings = @{}          # session id -> epoch the ping was requested
+$script:ForkFails = @{}      # Codex session id -> last fork_failed_at seen
 $script:PrevEnter = $false
 $script:PrevHotkey = $false
 $script:LastEnterReset = 0
@@ -259,6 +260,7 @@ function Get-AutoPingsLeft($st) {
     $ctx = [long]$st.cache_read + [long]$st.cache_write
     if ($ctx -le 0) { $ctx = [long]$st.context_tokens }   # no receipt yet: the status line's context size
     if ($ctx -le 0) { return -1 }
+    if ($st.source -eq 'codex') { $ctx += 20000 }   # a Codex fork adds ~20k uncached tokens (waiter.sh CODEX_FORK_EXTRA)
     $left = [long]$script:Cfg.autoKeepAliveBudget - [long]$st.auto_spent
     if ($left -le 0) { return 0 }
     return [int][math]::Floor($left / $ctx)
@@ -416,7 +418,8 @@ function Update-Lanes {
         elseif (-not $exp) { $status = 'idle' }
         if ($script:Pings.ContainsKey($sid) -and $status -eq 'timer') { $status = 'pinging' }
         $autoAt = [long]$st.last_auto_ping_at
-        if ($status -eq 'timer' -and $autoAt -and $autoAt -ge [long]$st.last_response_at -and ($now - $autoAt) -lt 90) { $status = 'pinging' }
+        $forkDone = ([long]$st.last_fork_at -ge $autoAt -or [long]$st.fork_failed_at -ge $autoAt)
+        if ($status -eq 'timer' -and $autoAt -and $autoAt -ge [long]$st.last_response_at -and -not $forkDone -and ($now - $autoAt) -lt 90) { $status = 'pinging' }
         $autoLeft = -1
         if ([bool]$script:Cfg.autoKeepAlive) { $autoLeft = Get-AutoPingsLeft $st }
 
@@ -426,10 +429,10 @@ function Update-Lanes {
         $ttlLabel = $(if ($ttl -le 300) { '5m' } elseif ($ttl -lt 3600) { "$([math]::Round($ttl / 60))m" } else { '1h' })
         $proj = [string]$st.project; if (-not $proj) { $proj = $sid.Substring(0, [math]::Min(8, $sid.Length)) }
         $lane = [pscustomobject]@{
-            key = "cc:$sid"; kind = 'cc'; sid = $sid; codex = $isCodex
+            key = "cc:$sid"; kind = 'cc'; sid = $sid; codex = $isCodex; forkFailedAt = [long]$st.fork_failed_at
             title = $(if ($isCodex) { "Codex: $proj" } else { "Code: $proj" }); badge = $ttlLabel
             ttl = $ttl; expires = $exp; status = $status; tip = ''
-            auto = (-not $isCodex -and [bool]$script:Cfg.autoKeepAlive -and $autoLeft -ne 0)
+            auto = ([bool]$script:Cfg.autoKeepAlive -and $autoLeft -ne 0)
         }
         if ($lane.auto) { $lane.badge = "$ttlLabel auto" }
         if ($isCodex) {
@@ -455,7 +458,19 @@ function Update-Lanes {
                 if ([long]$st.quota_resets_at -gt 0) { $ql += ", resets $([DateTimeOffset]::FromUnixTimeSeconds([long]$st.quota_resets_at).ToLocalTime().ToString('d MMM HH:mm'))" }
                 $lines += $ql
             }
-            $lines += 'Keep-alive: not available for Codex yet. Send a message in Codex to keep the cache warm.'
+            if ([long]$st.fork_pings -gt 0) {
+                $lines += "Keep-alive pings: $($st.fork_pings), last $(Format-Clock ([long]$st.last_fork_at)): read $(Format-K $st.last_fork_read), sent $(Format-K $st.last_fork_write) uncached"
+            }
+            if ([long]$st.fork_failed_at -gt [long]$st.last_fork_at) { $lines += "Last keep-alive ping failed at $(Format-Clock ([long]$st.fork_failed_at)) (see pings\*.out)." }
+            if ([bool]$script:Cfg.autoKeepAlive) {
+                $ctxK = Format-K ([long]$st.context_tokens + 20000)
+                if ($autoLeft -lt 0) { $lines += "Auto keep-alive: on, pings at T-$([math]::Max([int]$script:Cfg.autoKeepAliveAt, 300))s." }
+                elseif ($autoLeft -eq 0) { $lines += "Auto keep-alive: budget used for this idle stretch ($ctxK per ping). Send a message to refill it." }
+                else { $lines += "Auto keep-alive: on at T-$([math]::Max([int]$script:Cfg.autoKeepAliveAt, 300))s, $autoLeft ping(s) left in the budget (~$ctxK per ping)." }
+            } else {
+                $lines += 'Auto keep-alive: off (right-click to turn on).'
+            }
+            $lines += 'Right-click: keep alive (a hidden fork of this session, nothing added to the chat; uses a little of your plan).'
             $lane.tip = $lines -join "`n"
             [void]$lanes.Add($lane)
             continue
@@ -530,11 +545,24 @@ function Test-Alerts {
             if ($lane.kind -eq 'manual') {
                 $msg = "About $mins min left on the cache. Send any message in that chat to keep it warm."
             } elseif ($lane.codex) {
-                $msg = "About $mins min left. Send a message in Codex to keep it warm."
+                $msg = "About $mins min left. Right-click the widget and choose Keep alive, or send a message in Codex."
             } else {
                 $msg = "About $mins min left. Right-click the widget and choose Keep alive, or type /cache-clock:keepalive."
             }
             Show-Alert $title $msg 'Warning'
+        }
+    }
+    # A failed Codex fork ping (auto or manual): say so once per expiry (the listener retries before it).
+    # Failures seen at start-up are old news.
+    foreach ($lane in $script:Lanes) {
+        if (-not $lane.codex) { continue }
+        $prev = $script:ForkFails[$lane.sid]
+        $script:ForkFails[$lane.sid] = $lane.forkFailedAt
+        $fk = "$($lane.key)|$($lane.expires)"
+        if (-not $script:Fired.ContainsKey($fk)) { $script:Fired[$fk] = @{} }
+        if ($null -ne $prev -and $lane.forkFailedAt -gt [long]$prev -and -not $script:Fired[$fk].ContainsKey('forkfail')) {
+            $script:Fired[$fk]['forkfail'] = $true
+            Show-Alert "Cache Clock: $($lane.title)" 'The keep-alive ping failed. Send a message in Codex to keep the cache warm.' 'Warning'
         }
     }
     # Forget alert records for expiries that are long gone.
@@ -552,13 +580,15 @@ function Test-Pings {
             # The listener picked it up. The Stop hook will post the new expiry after Claude replies.
             if (($now - $script:Pings[$sid]) -gt 90) { $script:Pings.Remove($sid) }
             else {
+                # Done when a reply (wake-up turn) or a fork result (mod, or the Codex listener) arrives.
                 $st = Read-Json (Join-Path (Join-Path $script:Base 'sessions') ((Get-SafeId $sid) + '.json'))
-                if ($st -and [long]$st.last_response_at -ge $script:Pings[$sid]) { $script:Pings.Remove($sid) }
+                $at = $script:Pings[$sid]
+                if ($st -and ([long]$st.last_response_at -ge $at -or [long]$st.last_fork_at -ge $at -or [long]$st.fork_failed_at -ge $at)) { $script:Pings.Remove($sid) }
             }
         } elseif (($now - $script:Pings[$sid]) -gt 20) {
             Remove-Item -LiteralPath $flag -ErrorAction SilentlyContinue
             $script:Pings.Remove($sid)
-            Show-Alert 'Cache Clock' 'No keep-alive listener answered for that session. Type /cache-clock:keepalive in Claude Code instead.' 'Info'
+            Show-Alert 'Cache Clock' 'No keep-alive listener answered for that session. Send a message in that session instead.' 'Info'
         }
     }
 }
@@ -671,8 +701,8 @@ function New-RowMenu([int]$row) {
         [void]$menu.Items.Add((New-Object System.Windows.Forms.ToolStripSeparator))
     } elseif ($lane -and $lane.kind -eq 'cc') {
         $sid = $lane.sid
-        $canPing = (-not $lane.codex -and $lane.status -eq 'timer' -and $lane.expires -gt (Get-Epoch))
-        $pingText = $(if ($lane.codex) { 'Keep alive now (not on Codex yet)' } else { 'Keep alive now (sends a tiny turn)' })
+        $canPing = ($lane.status -eq 'timer' -and $lane.expires -gt (Get-Epoch))
+        $pingText = $(if ($lane.codex) { 'Keep alive now (hidden fork)' } else { 'Keep alive now (sends a tiny turn)' })
         $ping = Add-MenuItem $menu $pingText { Request-KeepAlive $this.Tag } $false $canPing
         $ping.Tag = $sid
         $hide = Add-MenuItem $menu 'Hide this session' { $script:Hidden[$this.Tag] = $true; Update-Lanes; $form.Invalidate() }
@@ -684,7 +714,7 @@ function New-RowMenu([int]$row) {
         $script:Cfg.autoResetOnEnter = -not [bool]$script:Cfg.autoResetOnEnter; Save-Config } ([bool]$script:Cfg.autoResetOnEnter))
     [void](Add-MenuItem $menu 'Show Chat / Cowork timer' {
         $script:Cfg.showManual = -not [bool]$script:Cfg.showManual; Save-Config; Update-Lanes; $form.Invalidate() } ([bool]$script:Cfg.showManual))
-    [void](Add-MenuItem $menu "Auto keep-alive for Claude Code (at T-$($script:Cfg.autoKeepAliveAt)s)" {
+    [void](Add-MenuItem $menu "Auto keep-alive for Claude Code and Codex (at T-$($script:Cfg.autoKeepAliveAt)s)" {
         $script:Cfg.autoKeepAlive = -not [bool]$script:Cfg.autoKeepAlive; Save-Config; Update-Lanes; $form.Invalidate() } ([bool]$script:Cfg.autoKeepAlive))
     [void](Add-MenuItem $menu 'Close when Claude is not running' {
         $script:Cfg.autoExit = -not [bool]$script:Cfg.autoExit; Save-Config } ([bool]$script:Cfg.autoExit))

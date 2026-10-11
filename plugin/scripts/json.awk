@@ -9,6 +9,8 @@
 #                              main-chat API response with cache receipts
 #   codex                      read a Codex rollout JSONL, print "ts input cached ctx_max quota_pct
 #                              quota_resets_at quota_window_min" for the last token_count (- if unknown)
+#   codexctx                   read a Codex rollout JSONL, print "model approval sandbox network effort" from
+#                              the last turn_context (- if unknown): what a fork ping must match
 #   prices                     read LiteLLM's model_prices_and_context_window.json, print one line per
 #                              Anthropic claude-* model: "model input write5m write1h read" in $/MTok
 # Keys are looked up with a regex on the raw text, like the transcript parsing: an unescaped
@@ -135,6 +137,21 @@ mode == "codex" {
     next
 }
 
+# The payload's own "model" comes before collaboration_mode.settings.model on the line.
+function fstr(line, key) {
+    if (match(line, "\"" key "\":\"[^\"]*\"")) return substr(line, RSTART + length(key) + 4, RLENGTH - length(key) - 5)
+    return "-"
+}
+mode == "codexctx" {
+    if (index($0, "\"type\":\"turn_context\"") == 0) next
+    y_model = fstr($0, "model"); y_appr = fstr($0, "approval_policy"); y_effort = fstr($0, "reasoning_effort")
+    y_sandbox = "-"; y_net = "false"
+    p = index($0, "\"sandbox_policy\":{")
+    if (p) { s = substr($0, p); y_sandbox = fstr(s, "type"); if (match(s, "^[^}]*\"network_access\":true")) y_net = "true" }
+    y_found = 1
+    next
+}
+
 # One model per top-level key. Nested objects are skipped by tracking brace depth.
 function p_mt(v) { return v == "" ? "-" : sprintf("%.6g", v * 1000000) }
 function p_emit() {
@@ -164,6 +181,10 @@ mode != "usage" { buf = buf $0 "\n" }
 END {
     if (mode == "usage") {
         if (u_found) print iso_epoch(u_ts), u_in, u_rd, u_wr, (u_ttl ? u_ttl : 0)
+        exit
+    }
+    if (mode == "codexctx") {
+        if (y_found) print y_model, y_appr, y_sandbox, y_net, y_effort
         exit
     }
     if (mode == "codex") {

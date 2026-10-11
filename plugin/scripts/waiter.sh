@@ -12,22 +12,28 @@
 # On macOS and Linux it also shows the expiry alerts (on Windows the widget does).
 # `waiter.sh codex` (hooks/codex-hooks.json, an async Stop hook): Codex has no asyncRewake. It runs
 # such a hook in the foreground, and exit 2 there blocks the Stop and continues the turn, in an
-# endless loop. So on Codex the listener never exits 2 and never wakes: alerts only, for now.
+# endless loop. So on Codex the listener never exits 2 and never wakes. It pings by running a fork
+# itself: `codex exec --ephemeral fork <sid>` sends the session's history plus a tiny prompt as a
+# separate thread, which reads the session's cache entry and adds nothing to the conversation.
 
 CC_HERE=$(cd "$(dirname "$0")" && pwd)
 . "$CC_HERE/lib.sh"
 
 host=${1:-claude-code}
 input=$(cat)
-eval "$(cc_fields "$input" h 'session_id agent_id')"
+eval "$(cc_fields "$input" h 'session_id agent_id transcript_path cwd')"
 [ -n "$h_session_id" ] || exit 0
 [ -n "$h_agent_id" ] && exit 0
+[ "${CACHE_CLOCK_IN_FORK:-}" = 1 ] && exit 0   # our own Codex fork ping
+[ "$h_transcript_path" = null ] && h_transcript_path=''
+[ "$host" = codex ] && [ -z "$h_transcript_path" ] && exit 0   # codex exec --ephemeral: nothing to keep warm
 
 safe=$(cc_safe_id "$h_session_id")
 state="$CC_DIR/sessions/$safe.json"
 ping="$CC_DIR/pings/$safe.flag"
 fork_req="$CC_DIR/pings/$safe.fork"
 fork_ack="$CC_DIR/pings/$safe.ack"
+fork_out="$CC_DIR/pings/$safe.out"
 waiter="$CC_DIR/waiters/$safe.pid"
 
 # Newest listener wins. An older one sees a different PID in the file and quits.
@@ -40,12 +46,13 @@ echo $$ > "$waiter"
 sp=''
 on_signal() {
     [ -n "$sp" ] && kill "$sp" 2>/dev/null
-    if [ "$(cat "$waiter" 2>/dev/null)" = "$$" ]; then rm -f "$state" "$ping" "$waiter" "$fork_req" "$fork_ack"; fi
+    if [ "$(cat "$waiter" 2>/dev/null)" = "$$" ]; then rm -f "$state" "$ping" "$waiter" "$fork_req" "$fork_ack" "$fork_out"; fi
     exit 0
 }
 trap on_signal HUP INT TERM
 started=$(cc_now)
 fired=' '
+fired_for=''
 fork_since=''
 
 nap() {
@@ -76,6 +83,59 @@ try_fork() {
     return 1
 }
 
+# Codex: run the fork ping and record the result (`cc.sh mod forked`, as for the Claude Code mod).
+# Model, sandbox, approval policy and effort come from the session's last turn_context: they must
+# match, or the request's prefix differs and misses the cache. At most 2 min. Returns 1 on failure.
+# An auto fork is charged to the budget afterwards, with the tokens it really sent (none if it never
+# reached the server). A failure alerts once per expiry.
+CODEX_FORK_EXTRA=20000   # uncached tokens a fork adds on top of the history (exec's own context), live ~15-22k
+CODEX_FORK_LEAD=300      # auto forks start at least this long before expiry: a slow or failed fork leaves time to retry
+CODEX_FORK_RETRY=60      # after a failed fork, wait this long before the next auto attempt
+CODEX_PING='[cache-clock] Automatic keep-alive, not from the user. Take no action and call no tools. Reply with only: ok'
+codex_fork() {  # auto|manual
+    kind=$1
+    tp=$(cc_native_path "$h_transcript_path")
+    set -- $(tail -c 1048576 "$tp" 2>/dev/null | awk -f "$CC_AWK" -v mode=codexctx)
+    if [ $# -eq 5 ] && [ "$1" != - ] && [ "$2" != - ] && [ "$3" != - ]; then
+        net=''; [ "$4" = true ] && net='-c sandbox_workspace_write.network_access=true'
+        eff=''; [ "$5" != - ] && eff="-c model_reasoning_effort=\"$5\""
+        dir=''; [ -n "$h_cwd" ] && [ -d "$h_cwd" ] && dir=$h_cwd
+        (
+            [ -n "$dir" ] && cd "$dir"
+            CACHE_CLOCK_IN_FORK=1 exec ${CACHE_CLOCK_CODEX:-codex} exec --ephemeral --skip-git-repo-check --json \
+                -m "$1" -s "$3" -c "approval_policy=\"$2\"" $net $eff fork "$h_session_id" "$CODEX_PING"
+        ) </dev/null >"$fork_out" 2>&1 &
+        fp=$!; i=0
+        while kill -0 "$fp" 2>/dev/null; do
+            [ $i -ge 120 ] && { kill "$fp" 2>/dev/null; break; }
+            nap 1; i=$((i + 1))
+        done
+        wait "$fp"; rc=$?
+    else
+        echo "no turn_context in $tp" > "$fork_out"; rc=1
+    fi
+    u=$(grep -o '"usage":{[^}]*}' "$fork_out" 2>/dev/null | tail -1)
+    fin=$(cc_get "{$u}" input_tokens); frd=$(cc_get "{$u}" cached_input_tokens)
+    if [ "$kind" = auto ] && [ -n "$fin" ]; then
+        cc_set auto_pings $(( ${s_auto_pings:-0} + 1 ))
+        cc_set auto_spent $(( ${s_auto_spent:-0} + fin ))
+        cc_write "$state"
+    fi
+    if [ "$rc" -eq 0 ] && [ -n "$fin" ] && [ -n "$frd" ]; then
+        sh "$CC_HERE/cc.sh" mod forked "$h_session_id" ok "$frd" $((fin - frd))
+        rm -f "$fork_out"   # kept on failure, for a look
+        started=$(cc_now)
+        return 0
+    fi
+    sh "$CC_HERE/cc.sh" mod forked "$h_session_id" fail "$frd" ''
+    case "$fired" in *' forkfail '*) ;; *)
+        fired="$fired forkfail "
+        { [ "$CC_PLATFORM" = mac ] || [ "$CC_PLATFORM" = linux ]; } &&
+            cc_notify "Cache Clock: ${s_project:-Codex}" 'The keep-alive ping failed. Send a message in Codex to keep the cache warm.' ;;
+    esac
+    return 1
+}
+
 wake() {
     [ "$host" = codex ] && return 0
     rm -f "$waiter"
@@ -102,7 +162,14 @@ while :; do
     case "$s_fork_expires_at" in ''|null|*[!0-9]*) ;; *)
         [ "$s_fork_expires_at" -gt "${s_expires_at:-0}" ] && s_expires_at=$s_fork_expires_at ;;
     esac
+    # A new expiry (a fork ping) starts a new round of alerts.
+    [ "$s_expires_at" = "$fired_for" ] || { fired=' '; fired_for=$s_expires_at; }
+    # Codex: a short pause after a failed fork before the next auto attempt.
+    cool=''
+    case "$s_fork_failed_at" in ''|null|*[!0-9]*) ;; *) [ "$host" = codex ] && [ $((now - s_fork_failed_at)) -lt $CODEX_FORK_RETRY ] && cool=1 ;; esac
     cc_load_config
+    auto_at=$cfg_autoKeepAliveAt
+    [ "$host" = codex ] && [ "$auto_at" -lt $CODEX_FORK_LEAD ] && auto_at=$CODEX_FORK_LEAD
 
     if [ -n "$s_expires_at" ]; then
         left=$((s_expires_at - now))
@@ -111,13 +178,19 @@ while :; do
         auto_left=0
         ctx=$(( ${s_cache_read:-0} + ${s_cache_write:-0} ))
         [ "$ctx" -gt 0 ] || ctx=${s_context_tokens:-0}   # no receipt yet: the status line's context size
-        [ "$cfg_autoKeepAlive" = true ] && [ "$host" != codex ] && auto_left=$(cc_auto_left "$ctx" 0 "${s_auto_spent:-0}" "$cfg_autoKeepAliveBudget")
+        [ "$host" = codex ] && [ "$ctx" -gt 0 ] && ctx=$((ctx + CODEX_FORK_EXTRA))
+        [ "$cfg_autoKeepAlive" = true ] && [ -z "$cool" ] && auto_left=$(cc_auto_left "$ctx" 0 "${s_auto_spent:-0}" "$cfg_autoKeepAliveBudget")
 
         # Auto keep-alive: ping shortly before expiry, while the budget allows.
-        if [ "$s_status" != working ] && [ $left -gt 5 ] && [ $left -le "$cfg_autoKeepAliveAt" ] && [ "$auto_left" -gt 0 ]; then
+        if [ "$s_status" != working ] && [ $left -gt 5 ] && [ $left -le "$auto_at" ] && [ "$auto_left" -gt 0 ]; then
+            cc_set last_auto_ping_at "$now"
+            if [ "$host" = codex ]; then
+                cc_write "$state"
+                codex_fork auto
+                continue
+            fi
             cc_set auto_pings $(( ${s_auto_pings:-0} + 1 ))
             cc_set auto_spent $(( ${s_auto_spent:-0} + ctx ))
-            cc_set last_auto_ping_at "$now"
             cc_write "$state"
             try_fork auto && continue
             wake 'Automatic keep-alive ping to keep the prompt cache warm.'
@@ -148,9 +221,9 @@ while :; do
 
     if [ -f "$ping" ]; then
         rm -f "$ping"
-        [ "$host" = codex ] && continue   # no keep-alive on Codex yet
         # Claude is mid-turn: the cache is being refreshed anyway, so skip the ping.
         [ "$s_status" = working ] && continue
+        [ "$host" = codex ] && { codex_fork manual; continue; }
         try_fork manual && continue
         wake 'The user asked for a keep-alive ping to keep the prompt cache warm.'
     fi

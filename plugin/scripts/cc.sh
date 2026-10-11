@@ -5,7 +5,7 @@
 #   sh cc.sh setup-info                what /cache-clock:setup needs to know
 #   sh cc.sh datadir                   print the data folder
 #   sh cc.sh mod hello <sid> <version>                     called by hooks/mod.tsx (the mod)
-#   sh cc.sh mod forked <sid> ok|fail <read> <write>       a fork ping's result
+#   sh cc.sh mod forked <sid> ok|fail <read> <write>       a fork ping's result (also from waiter.sh codex)
 # Keeps one state file per session in <data dir>/sessions/<sid>.json, from the API "receipts"
 # (usage fields) Claude Code writes into the session transcript, or Codex into its rollout file.
 # The status line (Claude Code only) and the Windows widget read the same files.
@@ -146,7 +146,7 @@ sweep_codex() {
         if { [ -n "$w_expires_at" ] && [ $((now - w_expires_at)) -gt 3600 ]; } ||
            { [ -z "$w_expires_at" ] && [ $((now - w_updated_at)) -gt 7200 ]; }; then
             b=$(basename "$f" .json)
-            rm -f "$f" "$CC_DIR/waiters/$b.pid" "$CC_DIR/pings/$b.flag"
+            rm -f "$f" "$CC_DIR/waiters/$b.pid" "$CC_DIR/pings/$b.flag" "$CC_DIR/pings/$b.out"
         fi
     done
 }
@@ -220,6 +220,7 @@ esac
 
 ev=${1:-}
 host=${2:-claude-code}
+[ "${CACHE_CLOCK_IN_FORK:-}" = 1 ] && { cat >/dev/null; exit 0; }   # hooks of our own Codex fork ping (waiter.sh): not a session
 input=$(cat)
 eval "$(cc_fields "$input" h 'session_id agent_id transcript_path cwd model')"
 [ -n "$h_session_id" ] || exit 0
@@ -289,7 +290,7 @@ case "$ev" in
         cc_write "$state"
         ;;
     end)
-        rm -f "$state" "$CC_DIR/waiters/$safe.pid" "$CC_DIR/pings/$safe.flag" "$CC_DIR/pings/$safe.fork" "$CC_DIR/pings/$safe.ack"
+        rm -f "$state" "$CC_DIR/waiters/$safe.pid" "$CC_DIR/pings/$safe.flag" "$CC_DIR/pings/$safe.fork" "$CC_DIR/pings/$safe.ack" "$CC_DIR/pings/$safe.out"
         ;;
 esac
 exit 0
