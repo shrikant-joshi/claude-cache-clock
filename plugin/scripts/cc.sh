@@ -194,8 +194,8 @@ case "${1:-}" in
         printf '%s\n' "settings_file: ${CLAUDE_CONFIG_DIR:-$HOME/.claude}/settings.json"
         printf '%s\n' "statusline_command: sh \"$sd/statusline.sh\""
         case $CC_PLATFORM in
-            wsl) printf '%s\n' "widget_install: powershell.exe -NoProfile -ExecutionPolicy Bypass -File \"$(wslpath -w "$CC_ROOT/addons/windows/install.ps1")\"" ;;
-            gitbash) printf '%s\n' "widget_install: powershell.exe -NoProfile -ExecutionPolicy Bypass -File \"$(cygpath -w "$CC_ROOT/addons/windows/install.ps1")\"" ;;
+            wsl) printf '%s\n' "widget_install: powershell.exe -NoProfile -ExecutionPolicy Bypass -File '$(wslpath -w "$CC_ROOT/addons/windows/install.ps1")'" ;;
+            gitbash) printf '%s\n' "widget_install: powershell.exe -NoProfile -ExecutionPolicy Bypass -File '$(cygpath -w "$CC_ROOT/addons/windows/install.ps1")'" ;;
             *) printf '%s\n' "widget_install: none (the widget is Windows-only)" ;;
         esac
         exit 0 ;;
@@ -217,7 +217,7 @@ case "${1:-}" in
                 eval "$(cc_fields "$(cat "$state" 2>/dev/null)" s 'ttl_s expires_at fork_pings')"
                 if [ "${4:-}" = ok ]; then
                     # The fork read the main transcript's cache entry, which resets its TTL.
-                    # Confirmed for the 5m TTL (dev/cc-fork-spike); the 1h case is assumed the same.
+                    # Confirmed for the 5m and 1h TTLs (dev/cc-fork-spike, 2026-10-11).
                     ttl=$s_ttl_s; case "$ttl" in ''|null|*[!0-9]*) ttl=$(cc_default_ttl) ;; esac
                     until=$((now + ttl))
                     case "$s_expires_at" in ''|null|*[!0-9]*) s_expires_at=0 ;; esac
