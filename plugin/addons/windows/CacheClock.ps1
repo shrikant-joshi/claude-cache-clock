@@ -389,6 +389,7 @@ function Test-UpdateCheck {
 
 # ---------- lanes ----------
 function Get-LaneColor($lane, [long]$now) {
+    if ($lane.old) { return $C.Grey }
     switch ($lane.status) {
         'working' { return $C.Blue }
         'idle' { return $C.Grey }
@@ -475,6 +476,8 @@ function Update-Lanes {
             ttl = $ttl; expires = $exp; status = $status; tip = ''
             auto = ([bool]$script:Cfg.autoKeepAlive -and $autoLeft -ne 0)
             link = $null; app = ''
+            cwd = [string]$st.cwd; src = [string]$st.source; client = [string]$st.client
+            started = [long]$st.started_at; upd = $upd; old = $false
         }
         # Sessions in a desktop app (cc.sh client=app) open there on a click. Terminal sessions have no link.
         if ($st.client -eq 'app') {
@@ -553,6 +556,20 @@ function Update-Lanes {
         [void]$lanes.Add($lane)
     }
 
+    # A terminal session with no update since a newer session started in the same folder has
+    # most likely ended (exited without SessionEnd). Open terminals refresh updated_at through the
+    # status line every 30s. Desktop app chats stay open in the app, so they are never "old".
+    foreach ($a in $lanes) {
+        if ($a.kind -ne 'cc' -or $a.client -eq 'app' -or $a.status -eq 'working' -or -not $a.cwd) { continue }
+        foreach ($b in $lanes) {
+            if ($b.kind -eq 'cc' -and $b.sid -ne $a.sid -and $b.cwd -eq $a.cwd -and $b.src -eq $a.src -and $b.started -gt $a.upd) {
+                $a.old = $true; $a.badge = 'old'; $a.auto = $false
+                $a.tip = "Probably ended: a newer session started in this folder at $(Format-Clock $b.started).`nRight-click: Hide this session.`n" + $a.tip
+                break
+            }
+        }
+    }
+
     if ($lanes.Count -eq 0) {
         [void]$lanes.Add([pscustomobject]@{ key = 'none'; kind = 'none'; sid = $null; title = 'Cache Clock'; badge = ''; ttl = 3600; expires = 0; status = 'idle'; tip = "Cache Clock $($script:Version)`nNo timers. Turn on the Chat / Cowork timer from the right-click menu." })
     }
@@ -570,7 +587,7 @@ function Update-Lanes {
 function Test-Alerts {
     $now = Get-Epoch
     foreach ($lane in $script:Lanes) {
-        if ($lane.kind -eq 'none' -or -not $lane.expires) { continue }
+        if ($lane.kind -eq 'none' -or -not $lane.expires -or $lane.old) { continue }
         if ($lane.status -eq 'working' -or $lane.status -eq 'nocache' -or $lane.status -eq 'idle') { continue }
         $key = "$($lane.key)|$($lane.expires)"
         if (-not $script:Fired.ContainsKey($key)) { $script:Fired[$key] = @{} }
@@ -670,7 +687,7 @@ $form.Add_Paint({
         $maxTitle = $w - $tx - $timeW - $pad - $badgeW - (Px 8)
         $tw = [math]::Min($titleSize.Width, $maxTitle)
         $flags = [System.Windows.Forms.TextFormatFlags]'Left, VerticalCenter, EndEllipsis, NoPadding'
-        [System.Windows.Forms.TextRenderer]::DrawText($g, $lane.title, $FontTitle, (New-Object System.Drawing.Rectangle($tx, $y, $tw, $rh)), $C.Text, $flags)
+        [System.Windows.Forms.TextRenderer]::DrawText($g, $lane.title, $FontTitle, (New-Object System.Drawing.Rectangle($tx, $y, $tw, $rh)), $(if ($lane.old) { $C.Muted } else { $C.Text }), $flags)
         if ($lane.badge) {
             $bw = [System.Windows.Forms.TextRenderer]::MeasureText($lane.badge, $FontBadge).Width
             [System.Windows.Forms.TextRenderer]::DrawText($g, $lane.badge, $FontBadge, (New-Object System.Drawing.Rectangle(($tx + $tw + (Px 4)), $y, $bw, $rh)), $(if ($lane.auto) { $C.Green } else { $C.Muted }), $flags)

@@ -22,7 +22,7 @@ Both tools cache your conversation on the server for a while after each response
 /cache-clock:setup
 ```
 
-`/cache-clock:setup` adds the status line to your Claude Code settings. Restart Claude Code afterwards. For automatic updates: `/plugin`, then Marketplaces, `cache-clock`, Enable auto-update.
+`/cache-clock:setup` adds the status line to your Claude Code settings. Restart Claude Code afterwards. For automatic updates: `/plugin`, then Marketplaces, `cache-clock`, Enable auto-update. In the desktop app, add `"autoUpdate": true` to the `cache-clock` entry under `extraKnownMarketplaces` in `~/.claude/settings.json` (for Local sessions on Windows, the Windows `%USERPROFILE%\.claude\settings.json`).
 
 **Codex** (CLI and the ChatGPT desktop app; for the app, install with the Codex CLI on the same system, on Windows the Windows CLI, not one in WSL):
 
@@ -39,7 +39,7 @@ Codex runs plugin hooks only after you trust them: open `/hooks` in Codex and tr
 
 ### Windows widget
 
-On Windows and WSL, the plugin starts a small always-on-top widget with one row per session, Claude Code and Codex alike: green, then amber under 15 min, red under 5 min. Hover a row for details. Click the row of a desktop app session (Claude app Code tab, or Codex in the ChatGPT app) to open that chat in its app. Right-click for keep-alive, auto keep-alive, check for updates, and more. It also has an estimated timer for the Claude desktop app's Chat and Cowork, which resets when you press Enter there.
+On Windows and WSL, the plugin starts a small always-on-top widget with one row per session, Claude Code and Codex alike: green, then amber under 15 min, red under 5 min. Hover a row for details. A terminal session that has had no update since a newer one started in the same folder shows as "old" and dimmed: it most likely ended. Click the row of a desktop app session (Claude app Code tab, or Codex in the ChatGPT app) to open that chat in its app. Right-click for keep-alive, auto keep-alive, check for updates, and more. It also has an estimated timer for the Claude desktop app's Chat and Cowork, which resets when you press Enter there.
 
 In Claude Code, `/cache-clock:setup` can also add the widget to the Start menu and Startup.
 

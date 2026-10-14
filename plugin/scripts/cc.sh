@@ -289,6 +289,7 @@ update_receipt() {  # turn_started_at
 case "$ev" in
     start)
         cc_set status '"idle"'
+        cc_set started_at "$now"   # the widget marks older terminal sessions in the same folder "old"
         update_receipt 0
         cc_write "$state"
         write_host_info
