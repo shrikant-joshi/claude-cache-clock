@@ -40,13 +40,33 @@ launch_widget() {
     (cd / && powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "$ps1" -DataDir "$dirw" </dev/null >/dev/null 2>&1 &)
 }
 
+# One machine can run Claude Code in WSL and on Windows (the desktop app's Local sessions), so
+# each environment keeps its own fields and the widget's update check covers both.
+# env/distro/plugin_version are the last writer's, for widgets older than 0.7.2.
 write_host_info() {
     case $CC_PLATFORM in wsl) env=wsl ;; gitbash) env=windows ;; *) return 0 ;; esac
+    v=$(plugin_version); t=$(cc_now)
     cc_set env "$(cc_jstr "$env")"
-    cc_set distro "$(cc_jstr "${WSL_DISTRO_NAME:-}")"
-    cc_set plugin_version "$(cc_jstr "$(plugin_version)")"
-    cc_set updated_at "$(cc_now)"
+    cc_set plugin_version "$(cc_jstr "$v")"
+    cc_set updated_at "$t"
+    cc_set "${env}_version" "$(cc_jstr "$v")"
+    cc_set "${env}_at" "$t"
+    if [ "$env" = wsl ]; then
+        cc_set distro "$(cc_jstr "${WSL_DISTRO_NAME:-}")"
+        cc_set wsl_distro "$(cc_jstr "${WSL_DISTRO_NAME:-}")"
+    else
+        # The desktop app's own claude.exe: Windows often has no claude on PATH.
+        cli=${CLAUDE_CODE_EXECPATH:-}
+        case "$cli" in /*) command -v cygpath >/dev/null 2>&1 && cli=$(cygpath -w "$cli" 2>/dev/null) ;; esac
+        cc_set windows_cli "$(cc_jstr "$cli")"
+    fi
     cc_write "$CC_DIR/host.json"
+}
+
+# A listener lives at most 2 hours and doesn't always remove its PID file (cold exit, killed,
+# reboot), and a killed writer can leave a temp file. Clear both once they are 3 hours old.
+sweep_stale() {
+    find "$CC_DIR/waiters" "$CC_DIR/sessions" -type f \( -name '*.pid' -o -name '*.tmp' \) -mmin +180 -exec rm -f {} + 2>/dev/null
 }
 
 # Read the last receipt from the transcript into pending updates for the session file.
@@ -273,6 +293,7 @@ case "$ev" in
         cc_write "$state"
         write_host_info
         sweep_codex
+        sweep_stale
         if [ "$host" != codex ]; then   # status line and $ prices are Claude Code only
             sync_statusline
             cc_load_config

@@ -168,6 +168,7 @@ $script:CodeActive = $false  # a Claude Code session file looks alive
 $script:LastClaudeSeen = Get-Epoch
 $script:LastProcCheck = 0
 $script:Upd = $null          # running "check for updates" process
+$script:UpdQueue = $null     # environments still to update after it
 
 # ---------- colors and fonts ----------
 $C = @{
@@ -284,20 +285,51 @@ function Test-AutoExit {
 }
 
 # ---------- check for updates ----------
-function Start-UpdateCheck {
-    # Runs the claude CLI where Claude Code lives (WSL or Windows, recorded by the plugin's
-    # SessionStart hook): refresh the marketplace, then update the plugin.
-    if ($script:Upd) { return }
+# One update per environment where Claude Code ran (WSL, Windows, or both), recorded by the
+# plugin's SessionStart hook in host.json. Environments not seen in 30 days are skipped.
+function Get-UpdateTargets {
     $h = Read-Json (Join-Path $script:Base 'host.json')
-    $cmd = 'claude plugin marketplace update cache-clock && claude plugin update cache-clock@cache-clock --json'
+    $now = Get-Epoch
+    $t = New-Object System.Collections.ArrayList
+    if (-not $h) { [void]$t.Add(@{ name = 'Windows'; env = 'windows' }); return ,$t }
+    if ($h.wsl_at -or $h.windows_at) {
+        if ($h.wsl_distro -and ($now - [long]$h.wsl_at) -lt 2592000) { [void]$t.Add(@{ name = 'WSL'; env = 'wsl'; distro = [string]$h.wsl_distro }) }
+        if ($h.windows_at -and ($now - [long]$h.windows_at) -lt 2592000) { [void]$t.Add(@{ name = 'Windows'; env = 'windows'; cli = [string]$h.windows_cli }) }
+    } elseif ($h.env -eq 'wsl' -and $h.distro) {
+        [void]$t.Add(@{ name = 'WSL'; env = 'wsl'; distro = [string]$h.distro })   # host.json from a plugin before 0.7.2
+    } else {
+        [void]$t.Add(@{ name = 'Windows'; env = 'windows' })
+    }
+    return ,$t
+}
+
+function Start-UpdateCheck {
+    if ($script:Upd -or $script:UpdQueue) { return }
+    $t = Get-UpdateTargets
+    if ($t.Count -eq 0) { return }
+    $script:UpdQueue = $t
+    $script:UpdMulti = ($t.Count -gt 1)
+    Show-Alert 'Cache Clock' 'Checking for updates...' 'Info'
+    Start-NextUpdate
+}
+
+function Start-NextUpdate {
+    $q = $script:UpdQueue
+    if (-not $q -or $q.Count -eq 0) { $script:UpdQueue = $null; return }
+    $tg = $q[0]; $q.RemoveAt(0)
     $psi = New-Object System.Diagnostics.ProcessStartInfo
-    if ($h -and $h.env -eq 'wsl' -and $h.distro) {
+    if ($tg.env -eq 'wsl') {
+        $cmd = 'claude plugin marketplace update cache-clock && claude plugin update cache-clock@cache-clock --json'
         $psi.FileName = 'wsl.exe'
         # -e runs sh directly: with --, the user's login shell would expand $PATH (and its "(x86)") first.
-        $psi.Arguments = '-d ' + $h.distro + ' -e sh -lc "PATH=$HOME/.local/bin:$PATH; ' + $cmd + '"'
+        $psi.Arguments = '-d ' + $tg.distro + ' -e sh -lc "PATH=$HOME/.local/bin:$PATH; ' + $cmd + '"'
     } else {
+        # The desktop app's claude.exe when there is one: Windows often has no claude on PATH.
+        $cli = 'claude'
+        if ($tg.cli -and (Test-Path -LiteralPath $tg.cli)) { $cli = '"' + $tg.cli + '"' }
+        $cmd = $cli + ' plugin marketplace update cache-clock && ' + $cli + ' plugin update cache-clock@cache-clock --json'
         $psi.FileName = 'cmd.exe'
-        $psi.Arguments = '/d /c "' + $cmd + '"'
+        $psi.Arguments = '/d /s /c "' + $cmd + '"'
     }
     $psi.UseShellExecute = $false
     $psi.CreateNoWindow = $true
@@ -308,11 +340,18 @@ function Start-UpdateCheck {
     try {
         $proc = [System.Diagnostics.Process]::Start($psi)
         # Drain both pipes in the background so a chatty CLI can't block on a full pipe.
-        $script:Upd = @{ proc = $proc; out = $proc.StandardOutput.ReadToEndAsync(); err = $proc.StandardError.ReadToEndAsync(); started = Get-Epoch }
-        Show-Alert 'Cache Clock' 'Checking for updates...' 'Info'
+        $script:Upd = @{ proc = $proc; out = $proc.StandardOutput.ReadToEndAsync(); err = $proc.StandardError.ReadToEndAsync(); started = Get-Epoch; name = $tg.name }
     } catch {
-        Show-Alert 'Cache Clock' "Couldn't run the claude CLI: $_" 'Error'
+        Show-Alert (Get-UpdateTitle $tg.name $true) "Couldn't run the claude CLI: $_" 'Error'
+        Start-NextUpdate
     }
+}
+
+function Get-UpdateTitle([string]$name, [bool]$failed) {
+    $t = 'Cache Clock'
+    if ($failed) { $t += ': update check failed' }
+    if ($script:UpdMulti) { $t += ' (' + $name + ')' }
+    return $t
 }
 
 function Test-UpdateCheck {
@@ -322,28 +361,30 @@ function Test-UpdateCheck {
         if (((Get-Epoch) - $u.started) -gt 180) {
             try { $u.proc.Kill() } catch { }
             $script:Upd = $null
-            Show-Alert 'Cache Clock' 'The update check timed out.' 'Error'
+            Show-Alert (Get-UpdateTitle $u.name $true) 'The update check timed out.' 'Error'
+            Start-NextUpdate
         }
         return
     }
     if (-not ($u.out.IsCompleted -and $u.err.IsCompleted)) { return }
     $script:Upd = $null
     $text = ($u.out.Result + "`n" + $u.err.Result) -replace '\x1b\[[0-9;]*[A-Za-z]', ''
-    Write-Log "update check (exit $($u.proc.ExitCode)): $($text.Trim())"
+    Write-Log "update check $($u.name) (exit $($u.proc.ExitCode)): $($text.Trim())"
     $res = $null
     foreach ($line in ($text -split "`n")) {
         if ($line.TrimStart().StartsWith('{')) { try { $res = $line | ConvertFrom-Json } catch { } }
     }
     if ($res -and $res.updateOutcome -eq 'up_to_date') {
-        Show-Alert 'Cache Clock' "You're on the latest version ($($res.newVersion))." 'Info'
+        Show-Alert (Get-UpdateTitle $u.name $false) "You're on the latest version ($($res.newVersion))." 'Info'
     } elseif ($res -and $res.outcome -eq 'ok') {
-        Show-Alert 'Cache Clock' "Updated $($res.oldVersion) to $($res.newVersion). Restart Claude Code to apply it. The widget updates itself when the next session starts." 'Info'
+        Show-Alert (Get-UpdateTitle $u.name $false) "Updated $($res.oldVersion) to $($res.newVersion). Restart Claude Code to apply it. The widget updates itself when the next session starts." 'Info'
     } else {
         $msg = $(if ($res -and $res.message) { [string]$res.message } else { (@($text -split "`n" | Where-Object { $_.Trim() }) | Select-Object -Last 2) -join ' ' })
         if (-not $msg) { $msg = "exit code $($u.proc.ExitCode)" }
         if ($msg.Length -gt 200) { $msg = $msg.Substring(0, 200) + '...' }
-        Show-Alert 'Cache Clock: update check failed' $msg 'Error'
+        Show-Alert (Get-UpdateTitle $u.name $true) $msg 'Error'
     }
+    Start-NextUpdate
 }
 
 # ---------- lanes ----------
@@ -739,7 +780,7 @@ function New-RowMenu([int]$row) {
         $script:Cfg.autoKeepAlive = -not [bool]$script:Cfg.autoKeepAlive; Save-Config; Update-Lanes; $form.Invalidate() } ([bool]$script:Cfg.autoKeepAlive))
     [void](Add-MenuItem $menu 'Close when Claude is not running' {
         $script:Cfg.autoExit = -not [bool]$script:Cfg.autoExit; Save-Config } ([bool]$script:Cfg.autoExit))
-    [void](Add-MenuItem $menu 'Check for updates' { Start-UpdateCheck } $false ($null -eq $script:Upd))
+    [void](Add-MenuItem $menu 'Check for updates' { Start-UpdateCheck } $false ($null -eq $script:Upd -and $null -eq $script:UpdQueue))
     [void](Add-MenuItem $menu 'Open data folder' { Start-Process explorer.exe $script:Base })
     [void](Add-MenuItem $menu 'Exit Cache Clock' { $form.Close() })
     return $menu

@@ -148,7 +148,7 @@ while :; do
     now=$(cc_now)
     owner=$(cat "$waiter" 2>/dev/null) || exit 0
     [ "$owner" = "$$" ] || exit 0
-    [ $((now - started)) -gt 7200 ] && exit 0
+    [ $((now - started)) -gt 7200 ] && { rm -f "$waiter"; exit 0; }
     [ -f "$state" ] || continue   # the Stop hook may still be writing it
     # A fork the mod is still running: wait for its result (at most 2 min).
     if [ -n "$fork_since" ]; then
@@ -174,7 +174,7 @@ while :; do
     if [ -n "$s_expires_at" ]; then
         left=$((s_expires_at - now))
         # Once the cache has gone cold, a ping would pay for a full rebuild. Stop listening.
-        [ $left -lt -60 ] && exit 0
+        [ $left -lt -60 ] && { rm -f "$waiter"; exit 0; }
         auto_left=0
         ctx=$(( ${s_cache_read:-0} + ${s_cache_write:-0} ))
         [ "$ctx" -gt 0 ] || ctx=${s_context_tokens:-0}   # no receipt yet: the status line's context size
